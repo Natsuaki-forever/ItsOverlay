@@ -1,18 +1,51 @@
-#  Overlay 0.01α
+# ItsOverlay - 就是遮
 
-Windows 11 x64 的本地遮盖工具。可为不同应用和窗口设置矩形遮盖，自定义文字、颜色和效果，并选择窗口锚定或视觉定位。正常使用时，鼠标可穿透遮盖。
+在 Windows 应用窗口上加一块遮盖。可以盖住容易分心的内容，也可以换成自己的文字。遮盖随目标窗口显示，平时点击和滚轮可以穿透，原来的应用照常使用。
 
-## 使用
+**Windows 11 x64 · 0.01α 便携版**
 
-1. 从 Releases 下载并完整解压 ZIP，启动 `ChatGPTOverlay.exe`。请保留同级的 `editor` 和 `vision` 目录。
-2. 按 **Ctrl+Shift+E** 打开面板，在顶部选择应用和窗口。
-3. 点击「新建」框选区域，再调整属性。点击「完成」保存。视觉定位可在「位置」中设置参考区域和遮盖关系。
+[下载 Windows 版](https://github.com/Natsuaki-forever/ItsOverlay/releases/download/v0.01-alpha/ChatGPTOverlay-0.01-alpha-windows-x64.zip) · [查看发布说明](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.01-alpha)
 
-应用设置和识别模板保存在本机 `%APPDATA%\ChatGPTOverlay`。视觉组件按需读取所选窗口的参考区域，识别在本机进行。此版本为 Alpha。
+![ItsOverlay 编辑面板。左侧是遮盖区域，右侧是位置和视觉参考设置。](docs/images/position.png)
 
-## 构建
+## 第一次使用
 
-需要 MSVC、Windows SDK 和 Python。默认编辑器使用 Win32。Windows SDK 放在 `tools/windows-sdk`，或使用 `tools/prepare-sdk.ps1 -DownloadMissing` 准备。
+1. 下载并完整解压 ZIP，运行 `ChatGPTOverlay.exe`。保留同级的 `editor` 和 `vision` 目录。便携版可以直接运行。
+2. 打开要遮盖的应用，按 **Ctrl+Shift+E** 唤出编辑面板，也可以单击系统托盘里的图标。顶部可以选择已添加的应用及窗口，或点「添加应用」后用鼠标指定一个窗口。
+3. 点击左侧的「新建」，在目标窗口上拖出一块矩形。想连续创建多个区域时，使用「全窗」，选完点「结束」。
+4. 选中左侧的区域，在「文字」「位置」「背景」「效果」中调整内容、字号、颜色、滚动、描边或发光。文字和背景都可以从屏幕取色。点击「完成」保存并回到正常使用。
+
+## 怎么设置跟随
+
+在「位置」里决定**遮盖放在哪儿**。在区域右侧的「⋯」里决定**遮盖显示在哪些窗口**。两项可以分别设置。
+
+| 要做什么 | 设置方式 |
+| --- | --- |
+| 盖住标题栏附近、侧栏一角或窗口底部的固定位置 | 用**窗口锚定**，分别选横向和纵向基准。窗口移动或缩放后，遮盖跟着所选边缘或中心走。 |
+| 让遮盖跟随会换位置的文字或图案 | 用**视觉定位**，指定一小段稳定、容易辨认的参考内容。遮盖可和参考框保持一定偏移。 |
+| 希望同一个应用重开窗口后还能使用这块遮盖 | 用**跟随应用**，这是新建区域的默认选项。只有一个可用窗口时可以自动恢复，多个窗口时可在顶部选窗。 |
+| 只为某一个窗口保留这块遮盖 | 从区域的「⋯」选**只在指定窗口显示…**。已保存的窗口配置归在所属应用下面。 |
+
+### 让遮盖跟着画面内容走
+
+1. 摆好遮盖，在「位置」点击「选择参考区域…」。选一小段稳定且容易区分的文字或图案，确认校准。
+2. 到「高级定位设置 → 遮盖关系」调整参考框与遮盖之间的距离。可以点「拖动遮盖」摆放遮盖，也可以直接输入偏移和大小。
+3. 要校正识别用的框，进入「参考框微调」。需要用已有模板重新找一次位置时，在「校准与检查」点「重新定位」。
+
+### 整理已有遮盖
+
+- 删除单块遮盖可用区域右侧「⋯」中的「删除区域…」。批量删除可点左侧「清空」，确认窗口会提示影响范围。
+- 顶部菜单把已打开的窗口和保存过的窗口配置归到各自的应用下。展开应用后，可以切换窗口，也可以从归档配置的「⋯」把它关联到打开的窗口。
+
+## 0.01α 的验证范围
+
+已在独立测试窗口验证编辑器启动、选窗菜单和窗口边界定位。文字／图案跟踪在切换窗口后再次移动参考内容的测试中出现过超时。需要固定住窗口的一角时，可以使用窗口锚定。
+
+配置和视觉参考模板保存在本机的 `%APPDATA%\ChatGPTOverlay`。视觉定位读取所选目标窗口的参考内容，在本机完成识别。
+
+## 从源码构建
+
+准备 x64 MSVC、Windows SDK 和 Python。将 SDK 放在 `tools/windows-sdk`，也可以运行 `.\tools\prepare-sdk.ps1 -DownloadMissing` 下载脚本指定的 SDK。以下命令构建默认 Win32 编辑器，并加入视觉组件。
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -20,4 +53,6 @@ python -m pip install -r visual_tracking/requirements.txt --target build/vision-
 .\build-native.ps1 -Output dist\candidate -Work build\candidate -VisionDeps build\vision-deps -StageOnly
 ```
 
-第三方组件许可见源码对应目录和发布包的 `licenses`。
+- [`native-engine/`](native-engine/) 包含 Win32 编辑器、窗口定位和遮盖渲染。
+- [`visual_tracking/`](visual_tracking/) 包含采样与视觉识别。
+- 第三方许可见源码中的 [运行时许可](third_party/runtime-licenses/) 和发行包的 `licenses` 目录。
