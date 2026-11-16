@@ -4,13 +4,13 @@
 
 **Windows 11 x64 · 0.01α 便携版**
 
-[下载 Windows 版](https://github.com/Natsuaki-forever/ItsOverlay/releases/download/v0.01-alpha/ChatGPTOverlay-0.01-alpha-windows-x64.zip) · [查看发布说明](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.01-alpha)
+[下载 Windows 版](https://github.com/Natsuaki-forever/ItsOverlay/releases/download/v0.01-alpha/ItsOverlay-0.01-alpha-windows-x64.zip) · [查看发布说明](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.01-alpha)
 
 ![ItsOverlay 编辑面板。左侧是遮盖区域，右侧是位置和视觉参考设置。](docs/images/position.png)
 
 ## 第一次使用
 
-1. 下载并完整解压 ZIP，运行 `ChatGPTOverlay.exe`。保留同级的 `editor` 和 `vision` 目录。便携版可以直接运行。
+1. 下载并完整解压 ZIP，运行 `ItsOverlay.exe`。保留同级的 `editor` 和 `vision` 目录。便携版可以直接运行。
 2. 打开要遮盖的应用，按 **Ctrl+Shift+E** 唤出编辑面板，也可以单击系统托盘里的图标。顶部可以选择已添加的应用及窗口，或点「添加应用」后用鼠标指定一个窗口。
 3. 点击左侧的「新建」，在目标窗口上拖出一块矩形。想连续创建多个区域时，使用「全窗」，选完点「结束」。
 4. 选中左侧的区域，在「文字」「位置」「背景」「效果」中调整内容、字号、颜色、滚动、描边或发光。文字和背景都可以从屏幕取色。点击「完成」保存并回到正常使用。

@@ -31,8 +31,13 @@ function Assert-OverlayDeliveryPath([string]$Path, [string]$Root) {
 
 function Assert-OverlayDelivery([string]$Path) {
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $Path 'build.json') | ConvertFrom-Json
+    $engineFile = $manifest.engine_file
+    if (-not $engineFile) { $engineFile = 'ChatGPTOverlay.exe' }
+    if ($engineFile -notin @('ItsOverlay.exe', 'ChatGPTOverlay.exe')) {
+        throw 'Unexpected launcher in the delivery manifest.'
+    }
     $files = @{
-        'ChatGPTOverlay.exe' = $manifest.engine_sha256
+        $engineFile = $manifest.engine_sha256
         'editor\OverlayEditor.exe' = $manifest.editor_sha256
     }
     if ($manifest.optional_visual_worker -or $manifest.vision_sha256) {

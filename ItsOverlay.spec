@@ -8,7 +8,7 @@ import PySide6
 qt_dir = Path(PySide6.__file__).parent
 editor_build = os.environ.get('OVERLAY_ENTRY') == 'editor'
 entry_file = 'editor_main.py' if editor_build else 'main.py'
-product_name = 'OverlayEditor' if editor_build else 'ChatGPTOverlay'
+product_name = 'OverlayEditor' if editor_build else 'ItsOverlay'
 runtime_names = {p.name.lower() for pattern in ('msvcp140*.dll', 'vcruntime140*.dll', 'concrt140.dll') for p in qt_dir.glob(pattern)}
 
 

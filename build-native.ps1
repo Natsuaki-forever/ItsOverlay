@@ -45,13 +45,13 @@ function Assert-Replaceable {
     if (-not (Test-Path -LiteralPath $published)) { return }
     if (-not $ReplaceExisting) { throw 'Use -ReplaceExisting to update the fixed delivery directory.' }
     if (-not (Test-Path -LiteralPath (Join-Path $published 'build.json'))) { throw 'Existing output is not an identified build.' }
-    $allowed = @('ChatGPTOverlay.exe','editor','vision','licenses','README.md','VERSION.txt','build.json','VERIFICATION.json','ACCEPTANCE_CHECKLIST.md','SHA256SUMS.txt')
+    $allowed = @('ItsOverlay.exe','ChatGPTOverlay.exe','editor','vision','licenses','README.md','VERSION.txt','build.json','VERIFICATION.json','ACCEPTANCE_CHECKLIST.md','SHA256SUMS.txt')
     foreach ($entry in Get-ChildItem -LiteralPath $published -Force) {
         if ($entry.Name -notin $allowed -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'Existing output contains unexpected files; preserve and review it before replacement.'
         }
     }
-    foreach ($process in Get-Process -Name ChatGPTOverlay,OverlayEditor,OverlayVision -ErrorAction SilentlyContinue) {
+    foreach ($process in Get-Process -Name ItsOverlay,ChatGPTOverlay,OverlayEditor,OverlayVision -ErrorAction SilentlyContinue) {
         if (-not $process.Path) { throw 'Cannot check a running product process; close the app before replacement.' }
         if ($process.Path.StartsWith($published + '\', [StringComparison]::OrdinalIgnoreCase)) {
             Write-OverlayUpdateIssue $issueDirectory 'update_running'
@@ -75,7 +75,7 @@ try {
     if ($QtEditor) {
         $env:OVERLAY_ENTRY = 'editor'
         $env:OVERLAY_BUNDLE_MODE = 'onedir'
-        & $Python -m PyInstaller --noconfirm --clean --distpath (Join-Path $workspace 'bundle') --workpath (Join-Path $workspace 'pyinstaller') ChatGPTOverlay.spec
+        & $Python -m PyInstaller --noconfirm --clean --distpath (Join-Path $workspace 'bundle') --workpath (Join-Path $workspace 'pyinstaller') ItsOverlay.spec
         if ($LASTEXITCODE -ne 0) { throw 'Qt editor build failed' }
     } else {
         & (Join-Path $PSScriptRoot 'native-engine\build.ps1') -Editor -Output (Join-Path $workspace 'native-editor')
@@ -88,7 +88,7 @@ try {
         $env:PYTHONPATH = $oldPythonPath
     }
     New-Item -ItemType Directory -Path $destination | Out-Null
-    Copy-Item -LiteralPath (Join-Path $workspace 'engine\OverlayNative.exe') -Destination (Join-Path $destination 'ChatGPTOverlay.exe')
+    Copy-Item -LiteralPath (Join-Path $workspace 'engine\OverlayNative.exe') -Destination (Join-Path $destination 'ItsOverlay.exe')
     $editorDestination = Join-Path $destination 'editor'
     if ($QtEditor) {
         Copy-Item -LiteralPath (Join-Path $workspace 'bundle\OverlayEditor') -Destination $editorDestination -Recurse
@@ -103,27 +103,28 @@ try {
     if ($VisionDeps) { $noticeArguments += @('--vision-deps', $env:OVERLAY_VISION_BUILD_DEPS) }
     & $Python (Join-Path $PSScriptRoot 'tools\collect_runtime_notices.py') @noticeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Runtime notice collection failed' }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NATIVE_USAGE.md') -Destination (Join-Path $destination 'README.md')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $destination 'README.md')
     $manifest = [ordered]@{
         release_id = $ReleaseId
         role = 'current'
         built_utc = [DateTime]::UtcNow.ToString('o')
         source_commit = (& git rev-parse HEAD)
         architecture = if ($QtEditor) { 'native-engine-with-on-demand-qt-editor' } else { 'native-engine-with-on-demand-win32-editor' }
-        engine_sha256 = (Get-FileHash -LiteralPath (Join-Path $destination 'ChatGPTOverlay.exe') -Algorithm SHA256).Hash
+        engine_file = 'ItsOverlay.exe'
+        engine_sha256 = (Get-FileHash -LiteralPath (Join-Path $destination 'ItsOverlay.exe') -Algorithm SHA256).Hash
         editor_sha256 = (Get-FileHash -LiteralPath (Join-Path $destination 'editor\OverlayEditor.exe') -Algorithm SHA256).Hash
         qualification = 'candidate'
         optional_visual_worker = [bool]$VisionDeps
     }
     if ($VisionDeps) { $manifest['vision_sha256'] = (Get-FileHash -LiteralPath (Join-Path $destination 'vision\OverlayVision.exe') -Algorithm SHA256).Hash }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'build.json') -Encoding UTF8
-    @("ChatGPT Overlay | 当前版 | $ReleaseId", "源码提交: $($manifest.source_commit)", "构建时间 UTC: $($manifest.built_utc)", '验证范围见 VERIFICATION.json；日常源码修改通过 Git 保存。') |
+    @("ItsOverlay - 就是遮 | 当前版 | $ReleaseId", "源码提交: $($manifest.source_commit)", "构建时间 UTC: $($manifest.built_utc)", '验证范围见 VERIFICATION.json；日常源码修改通过 Git 保存。') |
         Set-Content -LiteralPath (Join-Path $destination 'VERSION.txt') -Encoding UTF8
     $preparing = $false
     # Publish only after every build step succeeds; never merge old runtime DLLs.
     if ($VerifyEditor) {
         $verification = Join-Path $workspace ('verify-' + $ReleaseId + '-' + [guid]::NewGuid().ToString('N'))
-        & $Python (Join-Path $PSScriptRoot 'tests\packaged_editor_entry.py') --exe (Join-Path $destination 'ChatGPTOverlay.exe') --output $verification
+        & $Python (Join-Path $PSScriptRoot 'tests\packaged_editor_entry.py') --exe (Join-Path $destination 'ItsOverlay.exe') --output $verification
         if ($LASTEXITCODE -ne 0) {
             Write-OverlayUpdateIssue $issueDirectory 'update_verification_failed'
             throw 'Staged editor verification failed; current delivery was preserved.'
