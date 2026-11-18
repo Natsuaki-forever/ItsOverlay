@@ -32,10 +32,10 @@ def collect(destination,vision_deps=None,native_editor=False):
         # though the live worker does not load them. Ship their notices too.
         for name in ('psutil','charset-normalizer','threadpoolctl','typing-extensions','PyYAML'):
             matches=[p for p in local if p.metadata['Name'].lower().replace('_','-')==name.lower()]
-            if matches: packages.append((name,matches[0]))
-            else:
-                try: packages.append((name,distribution(name)))
-                except PackageNotFoundError: pass
+            try:
+                packages.append((name,matches[0] if matches else distribution(name)))
+            except PackageNotFoundError:
+                continue
     for name,package in packages:
         versions[name]=package.version
         folder=destination/name
@@ -61,4 +61,3 @@ if __name__=='__main__':
     parser.add_argument('--vision-deps')
     parser.add_argument('--native-editor',action='store_true')
     args=parser.parse_args();collect(args.destination,args.vision_deps,args.native_editor)
-

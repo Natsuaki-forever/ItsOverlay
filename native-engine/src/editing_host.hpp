@@ -161,7 +161,8 @@ inline json Engine::editor_operation(const std::string& operation,const json& pa
         const auto& r=shown.at("reference");
         VisualRect reference{r[0],r[1],r[2],r[3]};
         if(previous&&previous->id==id){reference=previous->reference;relation=previous->relation;}
-        auto cover=visual_nominal(reference,relation);
+        auto cover=visual_cover_for_edit(visual_nominal(reference,relation),
+            configState->viewportWidth,configState->viewportHeight);
         editCanvas->coverDrag=EditCanvas::CoverDrag{id,reference,cover,relation,true,false,0,0,cover};
         configState->stateSequence++;
         if(editor_window_valid())ShowWindow(editorHwnd,SW_HIDE);

@@ -12,12 +12,11 @@ a=Analysis(['tools/run_visual_worker.py'],pathex=[dependency_path],binaries=[],d
     noarchive=False,optimize=1)
 # The worker processes window frames and still-image templates. OpenCV loads
 # this optional plugin only for video input/output.
-video_plugin = 'opencv_videoio_ffmpeg'
-a.binaries = [entry for entry in a.binaries if not Path(entry[0]).name.lower().startswith(video_plugin)]
-a.datas = [entry for entry in a.datas if not Path(entry[0]).name.lower().startswith(video_plugin)]
+video_plugin = 'opencv_videoio_ffmpeg500_64.dll'
+a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() != video_plugin]
+a.datas = [entry for entry in a.datas if Path(entry[0]).name.lower() != video_plugin]
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],name='OverlayVision',debug=False,bootloader_ignore_signals=False,
     strip=False,upx=False,console=False,disable_windowed_traceback=False,
     manifest='app.manifest',exclude_binaries=True)
 collect=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='OverlayVision')
-

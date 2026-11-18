@@ -46,6 +46,7 @@ struct PaintBatch {
 struct Panel {
     HWND window=nullptr;
     bool resizePaintPending=false;
+    bool applyingDpiChange=false;
     struct EdgeDrag { RECT bounds; POINT origin; int edge; HWND outline; };
     std::optional<EdgeDrag> edgeDrag;
     HWND tooltips=nullptr;
@@ -234,6 +235,8 @@ struct Panel {
             calibration_notice(L"文字／图案跟踪使用固定尺寸。可调整基准、偏移和遮盖尺寸。");
         else if(page==Visual&&visualDetail==1)calibration_notice(L"选择参考区域后，即可调整遮盖关系。");
         else if(page==Visual&&visualDetail==2)calibration_notice(L"选择参考区域后，即可微调参考框。");
+        else if(visual_region()&&!effectiveRects.value(selected,json()).is_object())
+            calibration_notice(L"还未确认参考内容的位置，遮盖暂未显示。点「完成」后将尝试找回。");
         else if(visual_region())calibration_notice(L"视觉定位已启用，可重新定位或重选参考框。");
         else calibration_notice(L"当前使用窗口锚定。选好参考区域后可启用视觉定位。");
     }
@@ -1707,6 +1710,7 @@ struct Panel {
                 InvalidateRect(control(id),nullptr,FALSE);
             paintedPage=page;
         }
+        if(applyingDpiChange)return;
         if(resized&&IsWindowVisible(window)){
             if(!resizePaintPending)resizePaintPending=PostMessageW(window,resizePaintMessage,0,0)!=FALSE;
         }else if(dpiChanged||sidebarChanged)
@@ -1722,6 +1726,10 @@ struct Panel {
         const auto drag=*edgeDrag;
         const LONG dx=cursor.x-drag.origin.x,dy=cursor.y-drag.origin.y;
         RECT next=drag.bounds;
+        if(drag.edge==HTCAPTION){
+            OffsetRect(&next,dx,dy);
+            return next;
+        }
         auto dpi=GetDpiForWindow(window);
         const int minWidth=chrome::px(640,dpi),minHeight=chrome::px(525,dpi);
         switch(drag.edge){
@@ -1982,8 +1990,12 @@ struct Panel {
             if(y<bounds.top+chrome::px(65,GetDpiForWindow(window)))return HTCAPTION;
             return HTCLIENT;
         }
-        // Preview the proposed bounds without stretching the composited editor.
-        if(msg==WM_NCLBUTTONDOWN&&wp>=HTLEFT&&wp<=HTBOTTOMRIGHT&&!IsZoomed(window)){
+        // Commit outline moves ourselves so Windows cannot expose the
+        // composited surface halfway through a per-monitor DPI transition.
+        BOOL fullWindowDrag=TRUE;
+        const bool outlineCaption=msg==WM_NCLBUTTONDOWN&&wp==HTCAPTION&&
+            SystemParametersInfoW(SPI_GETDRAGFULLWINDOWS,0,&fullWindowDrag,0)&&!fullWindowDrag;
+        if(msg==WM_NCLBUTTONDOWN&&(outlineCaption||(wp>=HTLEFT&&wp<=HTBOTTOMRIGHT))&&!IsZoomed(window)){
             popup.close(false);
             RECT bounds{};GetWindowRect(window,&bounds);
             auto outline=CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT,
@@ -2019,21 +2031,40 @@ struct Panel {
             if(msg==WM_CAPTURECHANGED||msg==WM_CANCELMODE)end_edge_drag();
         }
         if(msg==WM_DPICHANGED){
+            const bool visible=IsWindowVisible(window)&&!IsIconic(window);
+            BOOL cloak=TRUE;
+            const bool cloaked=visible&&!presentationPending&&
+                SUCCEEDED(DwmSetWindowAttribute(window,DWMWA_CLOAK,&cloak,sizeof(cloak)));
+            applyingDpiChange=true;
             popup.close(false);
             auto rect=reinterpret_cast<const RECT*>(lp);
             if(tooltips)SendMessageW(tooltips,TTM_SETMAXTIPWIDTH,0,chrome::px(420,LOWORD(wp)));
             SetWindowPos(window,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,
-                SWP_NOZORDER|SWP_NOACTIVATE);
-            if(layoutDpi!=GetDpiForWindow(window))layout();
+                SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOREDRAW|SWP_NOCOPYBITS);
+            layout();
+            applyingDpiChange=false;
+            resizePaintPending=false;
+            {
+                PaintBatch frame(window);
+                RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|
+                    (visible?RDW_UPDATENOW:0));
+            }
+            if(cloaked){
+                GdiFlush();
+                cloak=FALSE;
+                DwmSetWindowAttribute(window,DWMWA_CLOAK,&cloak,sizeof(cloak));
+            }
             return 0;
         }
         if(msg==WM_SIZE){
+            if(applyingDpiChange)return 0;
             if(popup.open())popup.close(false);
             if(wp!=SIZE_MINIMIZED&&control(Status)&&(LOWORD(lp)!=layoutSize.cx||HIWORD(lp)!=layoutSize.cy||
                 layoutDpi!=GetDpiForWindow(window)))layout();
             return 0;
         }
         if(msg==resizePaintMessage){
+            if(!resizePaintPending)return 0;
             resizePaintPending=false;
             if(IsWindowVisible(window)&&!IsIconic(window)){
                 PaintBatch frame(window);

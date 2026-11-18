@@ -2,15 +2,15 @@
 
 在 Windows 应用窗口上加一块遮盖。可以盖住容易分心的内容，也可以换成自己的文字。遮盖随目标窗口显示，平时点击和滚轮可以穿透，原来的应用照常使用。
 
-**Windows 11 x64 · 0.01α 便携版**
+**Windows 11 x64 · 0.02α 源码预发布**
 
-[下载 Windows 版](https://github.com/Natsuaki-forever/ItsOverlay/releases/download/v0.01-alpha/ItsOverlay-0.01-alpha-windows-x64.zip) · [查看发布说明](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.01-alpha)
+[0.02α 发布说明](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.02-alpha) · [0.01α 便携版](https://github.com/Natsuaki-forever/ItsOverlay/releases/tag/v0.01-alpha)
 
-![ItsOverlay 编辑面板。左侧是遮盖区域，右侧是位置和视觉参考设置。](docs/images/position.png)
+编辑面板采用 Slint，由原生常驻程序按需打开。
 
 ## 第一次使用
 
-1. 下载并完整解压 ZIP，运行 `ItsOverlay.exe`。保留同级的 `editor` 和 `vision` 目录。便携版可以直接运行。
+1. 按下文的「从源码构建」生成 0.02α，然后运行构建目录中的 `ItsOverlay.exe`。保留同级的 `editor` 和 `vision` 目录。
 2. 打开要遮盖的应用，按 **Ctrl+Shift+E** 唤出编辑面板，也可以单击系统托盘里的图标。顶部可以选择已添加的应用及窗口，或点「添加应用」后用鼠标指定一个窗口。
 3. 点击左侧的「新建」，在目标窗口上拖出一块矩形。想连续创建多个区域时，使用「全窗」，选完点「结束」。
 4. 选中左侧的区域，在「文字」「位置」「背景」「效果」中调整内容、字号、颜色、滚动、描边或发光。文字和背景都可以从屏幕取色。点击「完成」保存并回到正常使用。
@@ -37,22 +37,28 @@
 - 删除单块遮盖可用区域右侧「⋯」中的「删除区域…」。批量删除可点左侧「清空」，确认窗口会提示影响范围。
 - 顶部菜单把已打开的窗口和保存过的窗口配置归到各自的应用下。展开应用后，可以切换窗口，也可以从归档配置的「⋯」把它关联到打开的窗口。
 
-## 0.01α 的验证范围
+## 0.02α 的验证范围
 
-已在独立测试窗口验证编辑器启动、选窗菜单和窗口边界定位。文字／图案跟踪在切换窗口后再次移动参考内容的测试中出现过超时。需要固定住窗口的一角时，可以使用窗口锚定。
+已在独立测试窗口验证编辑器启动、区域切换和中文文字保存，并运行了视觉定位几何和视觉组件启动检查。普通窗口中的视觉遮盖能否长期稳定找回仍在验证。需要固定住窗口的一角时，可以使用窗口锚定。
 
 配置和视觉参考模板保存在本机的 `%APPDATA%\ChatGPTOverlay`。视觉定位读取所选目标窗口的参考内容，在本机完成识别。
 
 ## 从源码构建
 
-准备 x64 MSVC、Windows SDK 和 Python。将 SDK 放在 `tools/windows-sdk`，也可以运行 `.\tools\prepare-sdk.ps1 -DownloadMissing` 下载脚本指定的 SDK。以下命令构建默认 Win32 编辑器，并加入视觉组件。
+在 Windows x64 上准备 PowerShell 7、MSVC C++ Build Tools、Rust x64 MSVC 工具链和 Python 3.13。以下命令从仓库根目录运行。
 
 ```powershell
-python -m pip install -r requirements.txt
-python -m pip install -r visual_tracking/requirements.txt --target build/vision-deps
-.\build-native.ps1 -Output dist\candidate -Work build\candidate -VisionDeps build\vision-deps -StageOnly
+.\tools\prepare-sdk.ps1 -DownloadMissing
+python -m pip install -r experiments/slint-panel/build-requirements.txt
+python -m pip install --no-deps --target build/vision-deps numpy==2.4.6 opencv-python-headless==5.0.0.93
+.\build-native.ps1 -Trial -VisionDeps build/vision-deps -StageOnly
 ```
 
-- [`native-engine/`](native-engine/) 包含 Win32 编辑器、窗口定位和遮盖渲染。
-- [`visual_tracking/`](visual_tracking/) 包含采样与视觉识别。
-- 第三方许可见源码中的 [运行时许可](third_party/runtime-licenses/) 和发行包的 `licenses` 目录。
+构建产物及验证记录位于 `build/trial-work/delivery`。Slint 依赖由 `Cargo.lock` 锁定。
+
+- [原生引擎](native-engine/)负责遮盖绘制、窗口跟随和托盘入口。
+- [Slint 编辑面板](experiments/slint-panel/)按需启动，管理应用、窗口和遮盖区域。
+- [视觉定位组件](visual_tracking/)在本机采样并识别选中的参考内容。
+- 第三方许可见发行包的 `licenses` 目录。
+
+[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev/)

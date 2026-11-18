@@ -8,11 +8,27 @@ param(
     [switch]$VerifyEditor,
     [switch]$ReplaceExisting,
     [switch]$QtEditor,
+    [switch]$SlintEditor,
+    [switch]$Trial,
+    [switch]$PublishStaged,
     [switch]$StageOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 . (Join-Path $PSScriptRoot 'tools\publish-native.ps1')
+if ($PublishStaged -and (-not $Trial -or $StageOnly)) {
+    throw 'PublishStaged installs a previously verified trial.'
+}
+if ($Trial) {
+    if ($PSBoundParameters.ContainsKey('Output')) { throw 'Trial uses the fixed trial delivery directory.' }
+    if ($Zip -or $QtEditor) { throw 'Trial uses Slint and is published as a local directory.' }
+    $Output = 'dist\ChatGPTOverlay-Trial'
+    if (-not $PSBoundParameters.ContainsKey('Work')) { $Work = 'build\trial-work' }
+    $SlintEditor = $true
+    $VerifyEditor = $true
+    if (-not $VisionDeps -and -not $PublishStaged) { throw 'Pass -VisionDeps for the trial visual worker (see the Slint README).' }
+}
+if ($QtEditor -and $SlintEditor) { throw 'Choose one editor.' }
 $issueDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'ChatGPTOverlay\diagnostics'
 $published = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Output))
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Work))
@@ -61,6 +77,18 @@ function Assert-Replaceable {
 }
 if (-not $StageOnly) { Assert-Replaceable }
 $destination = Join-Path $workspace 'delivery'
+Assert-OverlayDeliveryPath $destination $PSScriptRoot
+if ($PublishStaged) {
+    $manifest = Get-Content -Raw -LiteralPath (Join-Path $destination 'build.json') | ConvertFrom-Json
+    $results = Get-Content -Raw -LiteralPath (Join-Path $destination 'VERIFICATION.json') | ConvertFrom-Json
+    if ($manifest.role -ne 'trial' -or !$results.saved_unicode_text -or
+        !$results.visual_geometry_tests_passed -or !$results.worker_process_startup_verified) {
+        throw 'The staged trial must pass the editor, visual geometry and worker startup tests.'
+    }
+    Switch-OverlayDelivery $destination $published $PSScriptRoot -IssueDirectory $issueDirectory
+    Write-Host "Installed verified trial: $published"
+    return
+}
 if (Test-Path -LiteralPath $destination) {
     if ((Get-Item -LiteralPath $destination).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Build staging must not be a link.' }
     Remove-Item -LiteralPath $destination -Recurse -Force
@@ -77,6 +105,8 @@ try {
         $env:OVERLAY_BUNDLE_MODE = 'onedir'
         & $Python -m PyInstaller --noconfirm --clean --distpath (Join-Path $workspace 'bundle') --workpath (Join-Path $workspace 'pyinstaller') ItsOverlay.spec
         if ($LASTEXITCODE -ne 0) { throw 'Qt editor build failed' }
+    } elseif ($SlintEditor) {
+        & (Join-Path $PSScriptRoot 'native-engine\build.ps1') -SlintEditor -Output (Join-Path $workspace 'slint-editor')
     } else {
         & (Join-Path $PSScriptRoot 'native-engine\build.ps1') -Editor -Output (Join-Path $workspace 'native-editor')
     }
@@ -94,7 +124,8 @@ try {
         Copy-Item -LiteralPath (Join-Path $workspace 'bundle\OverlayEditor') -Destination $editorDestination -Recurse
     } else {
         New-Item -ItemType Directory -Path $editorDestination | Out-Null
-        Copy-Item -LiteralPath (Join-Path $workspace 'native-editor\OverlayNativeEditorPrototype.exe') -Destination (Join-Path $editorDestination 'OverlayEditor.exe')
+        $editorFile = if ($SlintEditor) { 'slint-editor\OverlayEditor.exe' } else { 'native-editor\OverlayNativeEditorPrototype.exe' }
+        Copy-Item -LiteralPath (Join-Path $workspace $editorFile) -Destination (Join-Path $editorDestination 'OverlayEditor.exe')
     }
     if ($VisionDeps) { Copy-Item -LiteralPath (Join-Path $workspace 'bundle\OverlayVision') -Destination (Join-Path $destination 'vision') -Recurse }
     Copy-Item -LiteralPath (Join-Path $workspace 'engine\licenses') -Destination $destination -Recurse
@@ -103,34 +134,77 @@ try {
     if ($VisionDeps) { $noticeArguments += @('--vision-deps', $env:OVERLAY_VISION_BUILD_DEPS) }
     & $Python (Join-Path $PSScriptRoot 'tools\collect_runtime_notices.py') @noticeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Runtime notice collection failed' }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $destination 'README.md')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NATIVE_USAGE.md') -Destination (Join-Path $destination 'README.md')
     $manifest = [ordered]@{
         release_id = $ReleaseId
-        role = 'current'
+        role = if ($Trial) { 'trial' } else { 'current' }
         built_utc = [DateTime]::UtcNow.ToString('o')
         source_commit = (& git rev-parse HEAD)
-        architecture = if ($QtEditor) { 'native-engine-with-on-demand-qt-editor' } else { 'native-engine-with-on-demand-win32-editor' }
+        source_worktree_dirty = [bool](& git status --porcelain --untracked-files=no)
+        architecture = if ($QtEditor) { 'native-engine-with-on-demand-qt-editor' }
+            elseif ($SlintEditor) { 'native-engine-with-on-demand-slint-editor' }
+            else { 'native-engine-with-on-demand-win32-editor' }
         engine_file = 'ItsOverlay.exe'
         engine_sha256 = (Get-FileHash -LiteralPath (Join-Path $destination 'ItsOverlay.exe') -Algorithm SHA256).Hash
         editor_sha256 = (Get-FileHash -LiteralPath (Join-Path $destination 'editor\OverlayEditor.exe') -Algorithm SHA256).Hash
-        qualification = 'candidate'
+        qualification = 'preview; see VERIFICATION.json for the checks run on this build'
         optional_visual_worker = [bool]$VisionDeps
     }
     if ($VisionDeps) { $manifest['vision_sha256'] = (Get-FileHash -LiteralPath (Join-Path $destination 'vision\OverlayVision.exe') -Algorithm SHA256).Hash }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'build.json') -Encoding UTF8
-    @("ItsOverlay - 就是遮 | 当前版 | $ReleaseId", "源码提交: $($manifest.source_commit)", "构建时间 UTC: $($manifest.built_utc)", '验证范围见 VERIFICATION.json；日常源码修改通过 Git 保存。') |
+    $channel = if ($Trial) { '试用版' } else { '当前版' }
+    @("ItsOverlay - 就是遮 | $channel | $ReleaseId", "源码提交: $($manifest.source_commit)", "构建时间 UTC: $($manifest.built_utc)", '验证范围见 VERIFICATION.json；日常源码修改通过 Git 保存。') |
         Set-Content -LiteralPath (Join-Path $destination 'VERSION.txt') -Encoding UTF8
     $preparing = $false
     # Publish only after every build step succeeds; never merge old runtime DLLs.
     if ($VerifyEditor) {
-        $verification = Join-Path $workspace ('verify-' + $ReleaseId + '-' + [guid]::NewGuid().ToString('N'))
-        & $Python (Join-Path $PSScriptRoot 'tests\packaged_editor_entry.py') --exe (Join-Path $destination 'ItsOverlay.exe') --output $verification
+        $verification = Join-Path $workspace 'verify-editor'
+        Assert-OverlayDeliveryPath $verification $PSScriptRoot
+        if (Test-Path -LiteralPath $verification) {
+            Remove-Item -LiteralPath $verification -Recurse -Force
+        }
+        $test = if ($SlintEditor) { 'experiments\slint-panel\smoke.py' } else { 'tests\packaged_editor_entry.py' }
+        $exe = Join-Path $destination 'ItsOverlay.exe'
+        if ($SlintEditor) { & $Python $test $exe $verification }
+        else { & $Python $test --exe $exe --output $verification }
         if ($LASTEXITCODE -ne 0) {
             Write-OverlayUpdateIssue $issueDirectory 'update_verification_failed'
             throw 'Staged editor verification failed; current delivery was preserved.'
         }
+        $resultsPath = Join-Path $destination 'VERIFICATION.json'
+        if ($Trial) {
+            $geometryVerification = Join-Path $workspace 'verify-visual-geometry'
+            $workerVerification = Join-Path $workspace 'verify-visual-worker'
+            foreach ($run in @($geometryVerification, $workerVerification)) {
+                Assert-OverlayDeliveryPath $run $PSScriptRoot
+                if (Test-Path -LiteralPath $run) { Remove-Item -LiteralPath $run -Recurse -Force }
+            }
+            $argsForGeometry = @('--visual-tests', ('"' + $geometryVerification + '"'))
+            $geometryTest = Start-Process -FilePath $exe -ArgumentList $argsForGeometry -WindowStyle Hidden -PassThru -Wait
+            if ($geometryTest.ExitCode -ne 0) {
+                Write-OverlayUpdateIssue $issueDirectory 'update_verification_failed'
+                throw 'Staged visual geometry tests failed; installed trial was preserved.'
+            }
+            & $Python 'tests\visual_package_worker.py' --exe (Join-Path $destination 'vision\OverlayVision.exe') --output $workerVerification
+            if ($LASTEXITCODE -ne 0) {
+                Write-OverlayUpdateIssue $issueDirectory 'update_verification_failed'
+                throw 'Staged visual worker startup tests failed; installed trial was preserved.'
+            }
+            $results = Get-Content -Raw -LiteralPath (Join-Path $verification 'result.json') | ConvertFrom-Json -AsHashtable
+            $results['visual_geometry_tests_passed'] = $true
+            $results['worker_process_startup_verified'] = $true
+            $results['real_chatgpt_verified'] = $false
+            $results | ConvertTo-Json | Set-Content -LiteralPath $resultsPath -Encoding UTF8
+        } else {
+            Copy-Item -LiteralPath (Join-Path $verification 'result.json') -Destination $resultsPath
+        }
         Write-Host "Verified staged editor: $verification"
     }
+    $files = Get-ChildItem -LiteralPath $destination -File -Recurse | Sort-Object FullName
+    $files | ForEach-Object {
+        $relative = $_.FullName.Substring($destination.Length + 1).Replace('\', '/')
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $relative
+    } | Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding ASCII
     if ($StageOnly) { Write-Host "Staged $destination"; return }
     Assert-Replaceable
     New-Item -ItemType Directory -Path (Split-Path -Parent $published) -Force | Out-Null
@@ -153,4 +227,3 @@ try {
     $env:OVERLAY_ENTRY = $oldEntry; $env:OVERLAY_BUNDLE_MODE = $oldMode
     $env:OVERLAY_VISION_BUILD_DEPS = $oldVisionDeps; $env:PYTHONPATH = $oldPythonPath
 }
-

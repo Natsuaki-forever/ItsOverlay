@@ -447,12 +447,22 @@ struct VisualRuntime : VisualRegionContext {
         if(!manual){calibration=nextCalibration;templateHex=std::move(nextTemplate);policy.retry_unavailable();}
         normal.separate=true;
     }
+    VisualRect proof_reference()const{
+        if(manual)return reference;
+        const double width=std::min(24.,double(config.viewportWidth));
+        const double height=std::min(24.,double(config.viewportHeight));
+        return {std::clamp(reference.x,0.,config.viewportWidth-width),
+            std::clamp(reference.y,0.,config.viewportHeight-height),width,height};
+    }
     json context(HWND target){
         RECT c=client_box(target);double scale=GetDpiForWindow(target)/96.;
-        int x=std::max(int(c.left),int(std::floor(c.left+(reference.x-32)*scale)));
-        int y=std::max(int(c.top),int(std::floor(c.top+(reference.y-32)*scale)));
-        int right=std::min(int(c.right),int(std::ceil(c.left+(reference.x+reference.width+32)*scale))+1);
-        int bottom=std::min(int(c.bottom),int(std::ceil(c.top+(reference.y+reference.height+32)*scale))+1);
+        // Startup proves capture in the current client area. The saved
+        // reference can be outside it after a layout change.
+        const auto area=holding()?proof_reference():reference;
+        int x=std::max(int(c.left),int(std::floor(c.left+(area.x-32)*scale)));
+        int y=std::max(int(c.top),int(std::floor(c.top+(area.y-32)*scale)));
+        int right=std::min(int(c.right),int(std::ceil(c.left+(area.x+area.width+32)*scale))+1);
+        int bottom=std::min(int(c.bottom),int(std::ceil(c.top+(area.y+area.height+32)*scale))+1);
         if(stage.empty()&&trackingKind=="features"){
             if(search.tiles.empty()){
                 auto origin=search.confirming?search.candidate:policy.featureOrigin;
@@ -531,11 +541,12 @@ struct VisualRuntime : VisualRegionContext {
     void positive(HWND target){
         normal.sync(surfaces,target,0,&config);
         int i=config.index(id);
+        const auto probe=proof_reference();
         for(size_t k=0;k<surfaces.size();k++){
             auto& s=*surfaces[k];s.ensure_window();
             if(int(k)==i){
-                json p=config.document["regions"][i];p.update({{"position_mode","anchor"},{"x",reference.x},{"y",reference.y},
-                    {"width",reference.width},{"height",reference.height},{"anchor_x","left"},{"anchor_y","top"},
+                json p=config.document["regions"][i];p.update({{"position_mode","anchor"},{"x",probe.x},{"y",probe.y},
+                    {"width",probe.width},{"height",probe.height},{"anchor_x","left"},{"anchor_y","top"},
                     {"text",""},{"background","#e913bc"},{"opacity",255},{"scroll",false},{"glow",false},{"outline",false}});
                 s.release();s.region=Region(p);
             }
@@ -802,6 +813,11 @@ struct VisualRuntime : VisualRegionContext {
             try{surfaceAllowed=surface_permission(target);}
             catch(const std::exception& e){
                 if(trackingKind!="features"||std::string(e.what())!="feature_search_area_unavailable")throw;
+                if(search.scanning&&search.radius(policy.searchLimit)<policy.searchLimit){
+                    search.next_level();
+                    policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));
+                    status();continue;
+                }
                 policy.pause("search_not_found");search.retry(now);status();continue;
             }
             if(!surfaceAllowed){
@@ -823,6 +839,7 @@ struct VisualRuntime : VisualRegionContext {
     }
     void tick(HWND target,bool editing){
         double now=visual_now();
+        const bool previouslyPermitted=windowPermitted;
         windowPermitted=!editing&&available(target)&&GetForegroundWindow()==target;
         if(stage.empty()&&handledTranslation!=config.translationSerial){
             handledTranslation=config.translationSerial;
@@ -881,6 +898,7 @@ struct VisualRuntime : VisualRegionContext {
                 }
                 r.policy.pause(!windowPermitted?"target_not_available":"geometry_changed");r.generation=config.visualGeneration;
             }
+            if(windowPermitted&&!previouslyPermitted)request_refresh(r,now);
             r.policy.tick(now,true);
             if(r.policy.phase==VisualPhase::Paused&&r.policy.reason=="freshness_expired"&&budgetMs>=100)r.policy.reason="compute_budget_exceeded";
             region_status(r);if(!r.policy.locked()&&windowPermitted)runnable=true;

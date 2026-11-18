@@ -3,13 +3,14 @@ param(
     [string]$MsvcRoot,
     [string]$SdkRoot,
     [switch]$VisualCaptureProbe,
-    [Alias('EditorPrototype')][switch]$Editor
+    [Alias('EditorPrototype')][switch]$Editor,
+    [switch]$SlintEditor
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
-if ($VisualCaptureProbe -and $Editor) { throw 'Choose either the capture probe or the editor' }
-if (($VisualCaptureProbe -or $Editor) -and $Output -eq 'build\native-prototype') { throw 'Choose a separate -Output for the selected target' }
+if (@($VisualCaptureProbe, $Editor, $SlintEditor).Where({$_}).Count -gt 1) { throw 'Choose one build target' }
+if (($VisualCaptureProbe -or $Editor -or $SlintEditor) -and $Output -eq 'build\native-prototype') { throw 'Choose a separate -Output for the selected target' }
 $sourceFile = if ($VisualCaptureProbe) { 'tests\native_visual_capture.cpp' } elseif ($Editor) {
     'native-engine\editor\panel.cpp'
 } else { 'native-engine\src\main.cpp' }
@@ -42,6 +43,30 @@ try {
     $env:INCLUDE = "$msvc\include;$sdkInclude\ucrt;$sdkInclude\shared;$sdkInclude\um"
     $env:LIB = "$msvc\lib\x64;$sdk\ucrt\x64;$sdk\um\x64"
     $env:PATH = "$msvc\bin\Hostx64\x64;$sdk\bin\$($sdkVersion.Name)\x64;" + $oldPath
+    if ($SlintEditor) {
+        $cargo = (Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue).Source
+        $oldCargoHome, $oldRustupHome = $env:CARGO_HOME, $env:RUSTUP_HOME
+        try {
+            if (-not $cargo) {
+                $localToolchain = Join-Path $projectRoot 'build\tauri-toolchain'
+                $cargo = Join-Path $localToolchain 'cargo\bin\cargo.exe'
+                if (-not (Test-Path -LiteralPath $cargo -PathType Leaf)) {
+                    throw 'Install the x64 MSVC Rust toolchain and add Cargo to PATH.'
+                }
+                $env:CARGO_HOME = Join-Path $localToolchain 'cargo'
+                $env:RUSTUP_HOME = Join-Path $localToolchain 'rustup'
+            }
+            $cache = Join-Path $projectRoot 'build\slint-target'
+            & $cargo build --release --locked --target-dir $cache `
+                --manifest-path 'experiments/slint-panel/Cargo.toml'
+            if ($LASTEXITCODE -ne 0) { throw 'Slint editor build failed' }
+            Copy-Item -LiteralPath (Join-Path $cache 'release\itsoverlay-slint-panel.exe') `
+                -Destination (Join-Path $Output 'OverlayEditor.exe') -Force
+        } finally {
+            $env:CARGO_HOME, $env:RUSTUP_HOME = $oldCargoHome, $oldRustupHome
+        }
+        return
+    }
     & "$msvc\bin\Hostx64\x64\cl.exe" /nologo /std:c++17 /O2 /EHsc /utf-8 /MT /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN $sourceFile "/Fo$Output\main.obj" "/Fe$Output\$executableName" /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:app.manifest user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib windowscodecs.lib ole32.lib shell32.lib advapi32.lib psapi.lib @extraLibraries
     if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
     $licenseDirectory = Join-Path $Output 'licenses'

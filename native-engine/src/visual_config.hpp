@@ -139,3 +139,13 @@ inline VisualPosition visual_geometry(const VisualRect& boundary,const json& rel
     bottom=std::min(std::round(height*scale),std::ceil(bottom*scale)+pad);
     return {nominal,{left/scale,top/scale,(right-left)/scale,(bottom-top)/scale}};
 }
+
+// Give the user a visible drag handle when the saved cover is fully off-client.
+// This is an editing preview; the saved relation is changed by explicit save only.
+inline VisualRect visual_cover_for_edit(VisualRect cover,double width,double height){
+    if(cover.x>=width||cover.x+cover.width<=0||cover.y>=height||cover.y+cover.height<=0){
+        cover.x=std::clamp(cover.x,0.,std::max(0.,width-cover.width));
+        cover.y=std::clamp(cover.y,0.,std::max(0.,height-cover.height));
+    }
+    return cover;
+}

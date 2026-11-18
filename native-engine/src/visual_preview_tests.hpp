@@ -129,6 +129,13 @@ inline void visual_preview_tests(Renderer& renderer,const fs::path& output){
         "off-client cover was treated as permanent tracking failure");
     require(clipped.tracking_states()[clippedId]["state"]=="HIDDEN"&&
         clipped.tracking_states()[clippedId]["reason"]=="visual_cover_outside_client","off-client cover has no clear status");
+    auto outsideCover=visual_nominal(cp.boundary,clippedRelation);
+    auto dragCover=visual_cover_for_edit(outsideCover,clipped.viewportWidth,clipped.viewportHeight);
+    require(dragCover.y>=0&&dragCover.y+dragCover.height<=clipped.viewportHeight+1e-6&&
+        dragCover.x==outsideCover.x&&dragCover.width==outsideCover.width&&dragCover.height==outsideCover.height,
+        "off-client cover has no visible drag handle");
+    require(clipped.document==clippedDocument&&clipped.revision==clippedRevision,
+        "creating a drag handle changed the saved calibration");
     require(clipped.featureOrigins.at(clippedId).second.y==cp.boundary.y,"hidden cover lost confirmed target origin");
     cp.pause("target_not_available");clippedRuntime.status();
     require(clipped.tracking_states()[clippedId]["state"]=="HIDDEN","opening editor erased the off-client explanation");
