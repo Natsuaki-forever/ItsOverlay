@@ -1,1 +1,0 @@
-"""ChatGPT Overlay for Windows."""

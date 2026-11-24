@@ -28,12 +28,13 @@ struct VisualRegionContext {
     std::string id,calibration,error,templateHex,trackingKind="boundary";
     VisualRect reference{},editBoundary{};
     uint64_t generation=0,editGeneration=0,checks=0,audits=0,reusedChecks=0;
-    double lastTask=0,lastAttempt=0;
+    double lastTask=0,lastAttempt=0,lastViewportW=0,lastViewportH=0;
     bool editBoundaryValid=false,captureReady=false;
     FeatureSearch search;
     json searchDiagnostic;
     std::string presentationReason;
     uint64_t presentationGeneration=0;
+    int resumeRetries=0;
     VisualRefreshSchedule refresh;
 };
 
@@ -65,6 +66,7 @@ struct VisualRuntime : VisualRegionContext {
     double resumeQualificationAt=0;
     HWND blockedWindow=nullptr;
     VisualTicket ticket;
+    VisualInputProbe inputProbe;
     std::map<HWND,LONG_PTR> qualified;
     std::map<HWND,DWORD> previousAffinity;
     VisualRuntime(ConfigState& config,NormalSurfaces& normal,std::vector<std::unique_ptr<Surface>>& surfaces,HWND host):
@@ -151,17 +153,55 @@ struct VisualRuntime : VisualRegionContext {
         for(const auto& entry:parked)if(!entry.second.policy.locked()&&(entry.second.policy.permitted||!entry.second.captureReady))return true;
         return false;
     }
-    UINT timer_period()const{
-        if(!stage.empty()||!task.is_null())return 50;
+    bool has_probeable_region()const{
+        if(!id.empty()&&!policy.locked()&&captureReady)return true;
+        for(const auto& entry:parked)if(!entry.second.policy.locked()&&entry.second.captureReady)return true;
+        return false;
+    }
+    double budget_limit()const{
+        if(refresh.active||policy.phase==VisualPhase::Verifying)return 300.;
+        for(const auto& entry:parked)if(entry.second.refresh.active||entry.second.policy.phase==VisualPhase::Verifying)return 300.;
+        return 100.;
+    }
+    UINT worker_wait_ms()const{
+        if(!stage.empty()||!task.is_null()||refresh.active)return 20;
+        for(const auto& r:parked)if(r.second.refresh.active)return 20;
         if(!windowPermitted)return 1000;
         double now=visual_now();int wait=refresh.wait_ms(now);
         for(const auto& r:parked)wait=std::min(wait,r.second.refresh.wait_ms(now));
         return UINT(wait);
     }
+    UINT timer_period()const{
+        UINT wait=worker_wait_ms();
+        if(windowPermitted&&stage.empty()&&config.visual_check_interval()>0&&has_probeable_region())
+            wait=std::min(wait,UINT(inputProbe.wait_ms(visual_now())));
+        return wait;
+    }
     void wake_worker(){if(workerWake.value)SetEvent(workerWake.value);}
     void request_refresh(VisualRegionContext& r,double now,double settle=.15){
         bool notify=!r.refresh.requested;r.refresh.request(now,settle);
         if(notify)wake_worker();
+    }
+    void request_probe(VisualRegionContext& r,double now,double settle=0){
+        bool notify=!r.refresh.requested;
+        if(r.refresh.request_probe(now,settle)&&notify)wake_worker();
+    }
+    // Poll the OS idle timestamp while the bound target is foreground to detect
+    // post-interaction layout shifts (sidebar toggles, scrolls, shortcuts) without
+    // installing global input hooks or raw keyboard listeners.
+    void poll_input_probe(double now){
+        if(!windowPermitted||!stage.empty()||config.visual_check_interval()<=0||!has_probeable_region()){
+            inputProbe.reset();return;
+        }
+        LASTINPUTINFO info{sizeof(LASTINPUTINFO),0};
+        if(!GetLastInputInfo(&info))return;
+        if(!inputProbe.observe(info.dwTime,now))return;
+        each_region([&](auto& r){
+            int i=config.index(r.id);
+            if(i<0||config.document["regions"][i]["position_mode"]!="visual")return;
+            if(r.policy.locked()||!r.captureReady)return;
+            request_probe(r,now,0);
+        });
     }
     bool capture_idle_expired(double now)const{
         return now-std::max(workerStarted,lastDelivered)>=5;
@@ -465,7 +505,9 @@ struct VisualRuntime : VisualRegionContext {
         int bottom=std::min(int(c.bottom),int(std::ceil(c.top+(area.y+area.height+32)*scale))+1);
         if(stage.empty()&&trackingKind=="features"){
             if(search.tiles.empty()){
-                auto origin=search.confirming?search.candidate:policy.featureOrigin;
+                auto origin=search.confirming?search.candidate
+                    :(search.scanning&&search.predicting&&search.predIndex<search.predictions.size())
+                    ?search.predictions[search.predIndex]:policy.featureOrigin;
                 unsigned dims[2]{};
                 if(templateHex.size()<24)throw std::runtime_error("invalid_worker_template");
                 for(int axis=0;axis<2;axis++)for(int byte=0;byte<4;byte++)
@@ -641,6 +683,7 @@ struct VisualRuntime : VisualRegionContext {
             policy.bind_session(workerSession);policy.featureRecovery=trackingKind=="features";policy.searchLimit=operationSearchLimit;
             policy.retryTemporaryLoss=true;
             policy.calibrate(reference,grant["dpi"]);search.reset();captureReady=true;
+            lastViewportW=config.viewportWidth;lastViewportH=config.viewportHeight;
             request_refresh(*this,now);
             auto priorOrigin=config.featureOrigins.find(id);
             if(policy.featureRecovery&&priorOrigin!=config.featureOrigins.end()&&priorOrigin->second.first==calibration)
@@ -668,8 +711,13 @@ struct VisualRuntime : VisualRegionContext {
             if(search.at<search.tiles.size()){policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));status();return;}
             if(search.ambiguous){search.retry(now);policy.reason="search_ambiguous";}
             else if(search.found){
-                search.scanning=false;search.confirming=true;search.tiles.clear();search.at=0;policy.hasCandidate=false;policy.reason="confirming";
-            }else if(search.radius(policy.searchLimit)<policy.searchLimit){search.next_level();policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));}
+                search.scanning=false;search.confirming=true;search.predicting=false;search.predictions.clear();search.tiles.clear();search.at=0;policy.hasCandidate=false;policy.reason="confirming";
+            }else if(search.predicting){
+                if(search.next_prediction()){policy.reason="searching_32";}
+                else if(policy.searchLimit>32){search.next_level();policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));}
+                else {search.retry(now);policy.reason="search_not_found";}
+            }else if(search.level==0&&search.start_predictions()){policy.reason="searching_32";}
+            else if(search.radius(policy.searchLimit)<policy.searchLimit){search.next_level();policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));}
             else {search.retry(now);policy.reason="search_not_found";}
             status();return;
         }
@@ -679,7 +727,14 @@ struct VisualRuntime : VisualRegionContext {
             if(kind==VisualObservation::NotFound||(!policy.allowed(rect)&&kind==VisualObservation::Complete)){search.reset();policy.reason="searching_32";}
         }
         if(accepted){checks++;if(ticket.complete)audits++;if(response.value("capture_reused",false))reusedChecks++;}
-        if(accepted&&policy.visible())publish_observation(sampled);
+        if(accepted&&kind==VisualObservation::Unchanged){
+            refresh.finish(now,config.visual_check_interval());
+        }else if(accepted&&kind==VisualObservation::Changed){
+            if(refresh.probe)refresh.promote_to_full();
+            if(trackingKind=="features")search.reset();
+        }else if(accepted&&policy.visible()){
+            publish_observation(sampled);
+        }
         budgetMs+=response.value("elapsed_ms",0.);status();
     }
     void publish_observation(double sampled){
@@ -687,8 +742,10 @@ struct VisualRuntime : VisualRegionContext {
         bool published=config.publish_visual_boundary(id,calibration,generation,policy.boundary,sampled,&why);
         if(published||why=="visual_cover_outside_client"){
             refresh.finish(visual_now(),config.visual_check_interval());
+            if(published)resumeRetries=0;
             presentationReason=published?"":why;
             presentationGeneration=config.visualGeneration;
+            lastViewportW=config.viewportWidth;lastViewportH=config.viewportHeight;
             if(trackingKind=="features"){
                 policy.featureOrigin=policy.boundary;
                 search=FeatureSearch{};search.scanning=false;
@@ -734,7 +791,7 @@ struct VisualRuntime : VisualRegionContext {
             }
             reply["ok"]=true;
             if(stage.empty()&&task.is_null()&&windowPermitted)pump(target,visual_now());
-            if(!task.is_null())reply["task"]=task;else reply["wait_ms"]=timer_period();
+            if(!task.is_null())reply["task"]=task;else reply["wait_ms"]=worker_wait_ms();
         }catch(const std::exception& e){fail_all(e.what());reply["stop"]=true;reply["ok"]=true;}
         return reply;
     }
@@ -788,22 +845,31 @@ struct VisualRuntime : VisualRegionContext {
             return;
         }
         if(now-budgetAt>=1){budgetAt=now;budgetMs=0;}
-        if(budgetMs>=100)return;
+        if(budgetMs>=budget_limit())return;
         for(const auto& key:keys){
             auto r=region(key);if(!r||r->policy.locked()||!r->captureReady)continue;
             if(!r->refresh.due(now,config.visual_check_interval()))continue;
             if(!r->refresh.active){
-                r->refresh.start(now);r->policy.pause("periodic_check");r->search.reset();
+                bool isProbe=r->refresh.requested&&r->refresh.probe;
+                r->refresh.start(now);
+                if(!isProbe){
+                    r->policy.pause("periodic_check");r->search.reset();
+                }else if(r->policy.phase!=VisualPhase::Following||!r->policy.permitted||!workerSession||r->policy.session!=workerSession){
+                    r->refresh.promote_to_full();r->policy.pause("interaction_check");r->search.reset();
+                }
             }
             if(now>=r->refresh.deadline){
-                r->refresh.finish(now,config.visual_check_interval());r->policy.pause("check_deferred");region_status(*r);continue;
+                if(r->resumeRetries<3){r->resumeRetries++;r->refresh.request(now,1.5);}
+                else r->refresh.finish(now,config.visual_check_interval());
+                r->policy.pause("check_deferred");region_status(*r);continue;
             }
             if(r->trackingKind=="features"&&now<r->search.retryAt)continue;
             bool following=r->policy.phase==VisualPhase::Following;
             // Follow the common quarter-second cadence rather than retaining
             // each region's initial phase offset. Still only one task per slot.
-            if(following&&std::floor(now*4)<=std::floor(r->lastTask*4)&&now-r->policy.lastAudit<1)continue;
-            if(!following&&now-r->lastAttempt<(r->policy.phase==VisualPhase::Verifying?.10:.25))continue;
+            if(following&&!r->refresh.probe&&std::floor(now*4)<=std::floor(r->lastTask*4)&&now-r->policy.lastAudit<1)continue;
+            bool tileBurst=r->policy.phase==VisualPhase::Verifying&&!r->search.tiles.empty();
+            if(!following&&!tileBurst&&now-r->lastAttempt<(r->policy.phase==VisualPhase::Verifying?.10:.25))continue;
             activate_region(key);lastAttempt=now;
             if(trackingKind=="features"&&search.scanning){
                 if(!search.started)search.started=now;
@@ -813,6 +879,9 @@ struct VisualRuntime : VisualRegionContext {
             try{surfaceAllowed=surface_permission(target);}
             catch(const std::exception& e){
                 if(trackingKind!="features"||std::string(e.what())!="feature_search_area_unavailable")throw;
+                if(search.scanning&&search.predicting&&search.next_prediction()){
+                    policy.reason="searching_32";status();continue;
+                }
                 if(search.scanning&&search.radius(policy.searchLimit)<policy.searchLimit){
                     search.next_level();
                     policy.reason="searching_"+std::to_string(int(search.radius(policy.searchLimit)));
@@ -821,7 +890,8 @@ struct VisualRuntime : VisualRegionContext {
                 policy.pause("search_not_found");search.retry(now);status();continue;
             }
             if(!surfaceAllowed){
-                refresh.finish(now,config.visual_check_interval());
+                if(resumeRetries<3){resumeRetries++;refresh.request(now,1.5);}
+                else refresh.finish(now,config.visual_check_interval());
                 if(!policy.locked()){policy.pause("roi_occluded");status();}continue;
             }
             if(!process.value){
@@ -833,7 +903,8 @@ struct VisualRuntime : VisualRegionContext {
             // again to every ordinary refresh round.
             policy.bind_session(workerSession);policy.dpi=GetDpiForWindow(target);policy.permit(now,0);policy.tick(now,true);status();
             if(policy.phase!=VisualPhase::Verifying&&policy.phase!=VisualPhase::Following)continue;
-            ticket=policy.begin(now,true,following,true);
+            bool watchProbe=refresh.probe&&policy.phase==VisualPhase::Following;
+            ticket=watchProbe?policy.begin_watch(now,true):policy.begin(now,true,following,true);
             if(ticket.request){issue(ticket.complete?"locate":"watch",target);return;}
         }
     }
@@ -841,8 +912,10 @@ struct VisualRuntime : VisualRegionContext {
         double now=visual_now();
         const bool previouslyPermitted=windowPermitted;
         windowPermitted=!editing&&available(target)&&GetForegroundWindow()==target;
+        if(!windowPermitted||!stage.empty()||exclusive)inputProbe.reset();
         if(stage.empty()&&handledTranslation!=config.translationSerial){
             handledTranslation=config.translationSerial;
+            inputProbe.reset();
             each_region([&](auto& r){r.policy.invalidate();if(!r.policy.visible())r.search.reset();});
             task=json();ticket={};taskOwner.clear();
         }
@@ -895,15 +968,24 @@ struct VisualRuntime : VisualRegionContext {
                 if(r.trackingKind=="features"){
                     r.search.reset();auto origin=config.featureOrigins.find(r.id);
                     r.policy.featureOrigin=origin!=config.featureOrigins.end()&&origin->second.first==r.calibration?origin->second.second:r.reference;
+                    if(layoutChanged&&r.lastViewportW>0&&r.lastViewportH>0&&config.viewportWidth>0&&config.viewportHeight>0){
+                        r.search.set_resize_predictions(
+                            r.policy.featureOrigin,
+                            config.viewportWidth-r.lastViewportW,
+                            config.viewportHeight-r.lastViewportH,
+                            config.viewportWidth,
+                            config.viewportHeight);
+                    }
                 }
                 r.policy.pause(!windowPermitted?"target_not_available":"geometry_changed");r.generation=config.visualGeneration;
             }
-            if(windowPermitted&&!previouslyPermitted)request_refresh(r,now);
+            if(windowPermitted&&!previouslyPermitted){r.search.reset();r.resumeRetries=0;request_refresh(r,now);}
             r.policy.tick(now,true);
-            if(r.policy.phase==VisualPhase::Paused&&r.policy.reason=="freshness_expired"&&budgetMs>=100)r.policy.reason="compute_budget_exceeded";
+            if(r.policy.phase==VisualPhase::Paused&&r.policy.reason=="freshness_expired"&&budgetMs>=budget_limit())r.policy.reason="compute_budget_exceeded";
             region_status(r);if(!r.policy.locked()&&windowPermitted)runnable=true;
         });
         if(!runnable){
+            inputProbe.reset();
             if(!idleSince)idleSince=now;
             if(process.value&&now-idleSince>=5)stop();return;
         }
@@ -911,6 +993,7 @@ struct VisualRuntime : VisualRegionContext {
         if(!task.is_null()){
             if(now-taskStarted>=1){fail_all("visual_worker_timeout");}return;
         }
+        poll_input_probe(now);
         pump(target,now);
         bool permit=false;each_region([&](auto& r){if(r.policy.permitted&&!r.policy.locked())permit=true;});
         bool pending=false;each_region([&](auto& r){if(r.refresh.active||r.refresh.requested)pending=true;});

@@ -32,13 +32,35 @@ inline std::vector<RECT> feature_search_tiles(const VisualRect& origin,double ra
 }
 
 struct FeatureSearch {
-    bool scanning=true,confirming=false,found=false,ambiguous=false;
-    unsigned level=0;size_t at=0;
+    bool scanning=true,confirming=false,found=false,ambiguous=false,predicting=false;
+    unsigned level=0;size_t at=0,predIndex=0;
     double retryAt=0,started=0;
     VisualRect candidate{};
     std::vector<RECT> tiles;
+    std::vector<VisualRect> predictions;
     void reset(){*this=FeatureSearch{};}
-    double radius(double limit)const{return level==0?32:level==1?std::min(128.,limit):limit;}
-    void next_level(){level++;at=0;tiles.clear();found=ambiguous=false;started=0;}
+    double radius(double limit)const{return (predicting||level==0)?32:level==1?std::min(128.,limit):limit;}
+    void set_resize_predictions(VisualRect origin,double dw,double dh,double clientW,double clientH){
+        predictions.clear();predIndex=0;predicting=false;
+        if((std::abs(dw)<=2&&std::abs(dh)<=2)||clientW<origin.width||clientH<origin.height)return;
+        double maxX=std::max(0.,clientW-origin.width),maxY=std::max(0.,clientH-origin.height);
+        auto push=[&](double dx,double dy){
+            VisualRect c{std::clamp(origin.x+dx,0.,maxX),std::clamp(origin.y+dy,0.,maxY),origin.width,origin.height};
+            if(std::abs(c.x-origin.x)<=4&&std::abs(c.y-origin.y)<=4)return;
+            for(const auto& p:predictions)if(std::abs(c.x-p.x)<=4&&std::abs(c.y-p.y)<=4)return;
+            predictions.push_back(c);
+        };
+        push(dw,0);push(dw*.5,0);push(0,dh);push(dw,dh);push(dw*.5,dh*.5);
+    }
+    bool start_predictions(){
+        if(predictions.empty())return false;
+        predicting=true;predIndex=0;at=0;tiles.clear();found=ambiguous=false;started=0;return true;
+    }
+    bool next_prediction(){
+        predIndex++;at=0;tiles.clear();found=ambiguous=false;started=0;
+        if(predIndex<predictions.size())return true;
+        predicting=false;predIndex=0;return false;
+    }
+    void next_level(){predicting=false;level++;at=0;tiles.clear();found=ambiguous=false;started=0;}
     void retry(double now){reset();retryAt=now+2;}
 };

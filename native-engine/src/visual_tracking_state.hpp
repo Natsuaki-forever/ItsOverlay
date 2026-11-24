@@ -81,6 +81,14 @@ struct VisualTrackingState {
         if(!complete&&!sharedCadence&&now-lastCheck<.25)return {};
         inflight=++nextRequest;return {epoch,inflight,session,complete};
     }
+    // Issue a lightweight in-place watch ticket while remaining in Following.
+    // Bypasses the 1s audit timeout used by continuous polling so an idle-probe
+    // round only runs full locate/search if the cached watch pixels actually changed.
+    VisualTicket begin_watch(double now,bool preserveGeometry=false){
+        tick(now,preserveGeometry);
+        if(!session||!permitted||inflight||locked()||phase!=VisualPhase::Following)return {};
+        inflight=++nextRequest;return {epoch,inflight,session,false};
+    }
     bool allowed(const VisualRect& r)const{
         const auto& origin=featureRecovery?featureOrigin:reference;
         double limit=featureRecovery?searchLimit+1e-6:32;

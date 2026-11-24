@@ -81,6 +81,8 @@ struct Engine {
     std::string pickField="background";
     POINT pickPoint{};
     bool pickWaiting=false;
+    bool hotkeyPending=false;
+    ULONGLONG hotkeyPendingAt=0;
     void report_issue(std::string& active, const std::string& code){
         if(configState&&active!=code)update_native_issue(configState->path.parent_path()/L"diagnostics",active,code);
     }
@@ -418,7 +420,12 @@ struct Engine {
                     else if(event==NIN_SELECT||event==NIN_KEYSELECT)instance->open_or_restore_editor();
                     return 0;
                 }
-                if(msg==WM_HOTKEY&&w==NativeShell::hotkeyId){instance->open_or_restore_editor();return 0;}
+                if(msg==WM_HOTKEY&&w==NativeShell::hotkeyId){
+                    if(GetAsyncKeyState(VK_CONTROL)<0||GetAsyncKeyState(VK_SHIFT)<0||GetAsyncKeyState(VK_MENU)<0){
+                        instance->hotkeyPending=true;instance->hotkeyPendingAt=GetTickCount64();SetTimer(hwnd,12,20,nullptr);
+                    }else instance->open_or_restore_editor();
+                    return 0;
+                }
             }
             if(msg==WM_CLOSE||msg==WM_APP+55){instance->request_quit();return 0;}
             if(msg==WM_APP+56){instance->open_or_restore_editor();return 0;}
@@ -524,6 +531,14 @@ struct Engine {
             }
             if(msg==WM_APP+1){instance->sync();return 0;}
             if(msg==WM_TIMER){
+                if(w==12){
+                    if(!instance->hotkeyPending){KillTimer(hwnd,12);return 0;}
+                    bool held=(GetAsyncKeyState(VK_CONTROL)<0)||(GetAsyncKeyState(VK_SHIFT)<0)||(GetAsyncKeyState(VK_MENU)<0);
+                    if(!held||GetTickCount64()-instance->hotkeyPendingAt>=260){
+                        KillTimer(hwnd,12);instance->hotkeyPending=false;instance->open_or_restore_editor();
+                    }
+                    return 0;
+                }
                 if(w==11){instance->visual_tick();return 0;}
                 if(w==10){KillTimer(hwnd,10);instance->sync();return 0;}
                 if(w==1){

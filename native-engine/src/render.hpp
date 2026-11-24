@@ -34,10 +34,10 @@ struct GlyphPainter : IDWriteTextRenderer {
     Renderer& renderer;
     ID2D1RenderTarget* rt;
     const Region& region;
-    bool halo;
+    int mode; // 0 = core, 1 = halo, 2 = shadow
     ULONG references=1;
     unsigned missingGlyphs=0;
-    GlyphPainter(Renderer& renderer,ID2D1RenderTarget* rt,const Region& region,bool halo):renderer(renderer),rt(rt),region(region),halo(halo){}
+    GlyphPainter(Renderer& renderer,ID2D1RenderTarget* rt,const Region& region,int mode):renderer(renderer),rt(rt),region(region),mode(mode){}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {
         if(iid==__uuidof(IUnknown)||iid==__uuidof(IDWriteTextRenderer)||iid==__uuidof(IDWritePixelSnapping)){*out=static_cast<IDWriteTextRenderer*>(this);AddRef();return S_OK;}
         *out=nullptr;return E_NOINTERFACE;
@@ -60,11 +60,15 @@ struct GlyphPainter : IDWriteTextRenderer {
         rt->SetTransform(D2D1::Matrix3x2F::Translation(x,y)*previous);
         Com<ID2D1SolidColorBrush> brush;
         hr=rt->CreateSolidColorBrush(region.foreground,brush.put());if(FAILED(hr))return hr;
-        if(halo){
+        if(mode==1){
             for(int step=8;step>0;--step){auto tint=region.glowColor;tint.a=.035f+(1-step/8.f)*.1f;
                 brush->SetColor(tint);
                 rt->DrawGeometry(path.value,brush.value,2*(region.glowRadius*step/8.f+(region.outline?region.outlineWidth:0)),renderer.stroke.value);
             }
+        }else if(mode==2){
+            brush->SetColor(region.shadowColor);
+            if(region.outline)rt->DrawGeometry(path.value,brush.value,2*region.outlineWidth,renderer.stroke.value);
+            rt->FillGeometry(path.value,brush.value);
         }else{
             if(region.outline){brush->SetColor(region.outlineColor);rt->DrawGeometry(path.value,brush.value,2*region.outlineWidth,renderer.stroke.value);}
             brush->SetColor(region.foreground);rt->FillGeometry(path.value,brush.value);
@@ -96,7 +100,8 @@ struct Surface {
     size_t cacheBytes=0;
     size_t outputBytes=0;
     Dib cpuCore,cpuHalo;
-    std::vector<BYTE> featherMask;
+    std::vector<BYTE> featherMask,shapeMask,borderMask;
+    std::vector<DWORD> bgPixels;
     double drawMilliseconds=0,blendMilliseconds=0,uploadMilliseconds=0;
     explicit Surface(Renderer& renderer,const Region& region,bool createWindow=true):renderer(renderer),region(region){
         if(createWindow)ensure_window();
@@ -115,7 +120,7 @@ struct Surface {
     void release(){
         renderer.cachedBytes-=cacheBytes;cacheBytes=0;
         renderer.surfaceBytes-=outputBytes;outputBytes=0;
-        cpuCore.reset();cpuHalo.reset();featherMask.clear();
+        cpuCore.reset();cpuHalo.reset();featherMask.clear();shapeMask.clear();borderMask.clear();bgPixels.clear();
         if(dc){SelectObject(dc,oldBitmap);DeleteDC(dc);dc=nullptr;}
         if(dib){DeleteObject(dib);dib=nullptr;}
         bits=nullptr;core=Com<ID2D1Bitmap>();halo=Com<ID2D1Bitmap>();
@@ -126,8 +131,13 @@ struct Surface {
         Com<IWICBitmap> image;Com<ID2D1RenderTarget> paint;
         renderer.bitmap(UINT(std::ceil(spriteWidth*dpi/96)),UINT(std::ceil(region.height*dpi/96)),dpi,image,paint);
         paint->BeginDraw();paint->Clear(D2D1::ColorF(0,0));
-        GlyphPainter glyphs(renderer,paint.value,region,glow);
-        check(layout->Draw(nullptr,&glyphs,margin+(region.scroll?0:region.padding),0));
+        float drawX=margin+(region.scroll?0:region.padding);
+        if(!glow&&region.shadow){
+            GlyphPainter shadowGlyphs(renderer,paint.value,region,2);
+            check(layout->Draw(nullptr,&shadowGlyphs,drawX+region.shadowOffsetX,region.shadowOffsetY));
+        }
+        GlyphPainter glyphs(renderer,paint.value,region,glow?1:0);
+        check(layout->Draw(nullptr,&glyphs,drawX,0));
         if(!glow)missingGlyphs=glyphs.missingGlyphs;
         check(paint->EndDraw());
         auto props=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),dpi,dpi);
@@ -158,7 +168,8 @@ struct Surface {
         Com<IDWriteTextLayout1> advanced;
         if(SUCCEEDED(layout->QueryInterface(IID_PPV_ARGS(advanced.put()))))check(advanced->SetCharacterSpacing(0,region.spacing,0,{0,UINT32(text.size())}));
         DWRITE_TEXT_METRICS metrics;check(layout->GetMetrics(&metrics));advance=metrics.widthIncludingTrailingWhitespace;
-        margin=(region.glow?region.glowRadius:0)+(region.outline?region.outlineWidth:0)+2;
+        float shadowPad=region.shadow?std::max(std::abs(region.shadowOffsetX),std::abs(region.shadowOffsetY)):0.f;
+        margin=(region.glow?region.glowRadius:0)+(region.outline?region.outlineWidth:0)+shadowPad+2;
         spriteWidth=(region.scroll?advance:region.width)+2*margin;
         double pixels=std::ceil(spriteWidth*dpi/96)*std::ceil(region.height*dpi/96);
         size_t bytes=size_t(pixels)*4*(region.glow?2:1);
@@ -180,6 +191,44 @@ struct Surface {
                 float edge=std::min(region.featherWidth,region.width/2);
                 featherMask[x]=BYTE(std::round(255*std::clamp(std::min(logical,region.width-logical)/edge,0.f,1.f)));
             }
+            if(region.bgGradient){
+                bgPixels.resize(size_t(w)*h);
+                float rad=region.bgGradientAngle*3.14159265358979323846f/180.f;
+                float dx=std::sin(rad),dy=-std::cos(rad);
+                float span=std::max(0.5f,0.5f*(std::abs(dx)+std::abs(dy)));
+                for(int y=0;y<h;y++)for(int x=0;x<w;x++){
+                    float nx=(x+0.5f)/w-0.5f,ny=(y+0.5f)/h-0.5f;
+                    float t=std::clamp(0.5f+(nx*dx+ny*dy)/(2.f*span),0.f,1.f);
+                    float a=region.background.a+(region.bgGradientColor.a-region.background.a)*t;
+                    float r=region.background.r+(region.bgGradientColor.r-region.background.r)*t;
+                    float g=region.background.g+(region.bgGradientColor.g-region.background.g)*t;
+                    float b=region.background.b+(region.bgGradientColor.b-region.background.b)*t;
+                    unsigned pa=unsigned(std::round(a*255.f));
+                    unsigned pr=unsigned(std::round(r*pa));
+                    unsigned pg=unsigned(std::round(g*pa));
+                    unsigned pb=unsigned(std::round(b*pa));
+                    bgPixels[size_t(y)*w+x]=(pa<<24)|(pr<<16)|(pg<<8)|pb;
+                }
+            }
+            if(region.cornerRadius>0||region.border){
+                shapeMask.resize(size_t(w)*h);
+                if(region.border)borderMask.resize(size_t(w)*h);
+                float halfW=w*0.5f,halfH=h*0.5f;
+                float r=std::min({region.cornerRadius*dpi/96.f,halfW,halfH});
+                float bw=region.borderWidth*dpi/96.f;
+                for(int y=0;y<h;y++)for(int x=0;x<w;x++){
+                    float qx=std::abs((x+0.5f)-halfW)-(halfW-r);
+                    float qy=std::abs((y+0.5f)-halfH)-(halfH-r);
+                    float sd=std::hypot(std::max(qx,0.f),std::max(qy,0.f))+std::min(std::max(qx,qy),0.f)-r;
+                    float outer=std::clamp(0.5f-sd,0.f,1.f);
+                    size_t idx=size_t(y)*w+x;
+                    shapeMask[idx]=BYTE(std::round(outer*255.f));
+                    if(region.border){
+                        float inner=std::clamp(0.5f-(sd+bw),0.f,1.f);
+                        borderMask[idx]=BYTE(std::round(std::clamp(outer-inner,0.f,1.f)*255.f));
+                    }
+                }
+            }
             // Cached glyphs and the output DIB suffice for ordinary frames.
             rt=Com<ID2D1RenderTarget>();bitmap=Com<IWICBitmap>();
             return;
@@ -195,11 +244,20 @@ struct Surface {
             check(rt->CreateLayer(D2D1::SizeF(region.width,region.height),fadeLayer.put()));
         }
     }
+    double scroll_period()const{
+        double base=region.scrollFill?double(std::max(1.f,advance)):double(std::max(advance,std::max(1.f,region.width-2*region.padding)));
+        return base+region.gap;
+    }
+    int scroll_copies(double period)const{
+        if(!region.scroll)return 1;
+        if(!region.scrollFill)return 2;
+        return std::clamp(int(std::ceil(region.width/std::max(1.0,period)))+2,2,64);
+    }
     void composite(double seconds){
-        double period=std::max(advance,std::max(1.f,region.width-2*region.padding))+region.gap;
+        double period=scroll_period();
         double phase=std::fmod(seconds*region.speed,period);
         double offset=region.scroll?(region.right?phase-period:-phase):0;
-        int count=region.scroll?2:1,origins[2];
+        int count=scroll_copies(period),origins[64];
         for(int i=0;i<count;i++)origins[i]=int(std::round((offset+i*period-margin+(region.scroll?region.padding:0))*dpi/96));
         float opacity=region.glowStrength;
         if(region.pulse)opacity*=.25f+.75f*(.5f+.5f*float(std::cos(seconds*6.283185307179586/region.glowPeriod)));
@@ -218,9 +276,20 @@ struct Surface {
         unsigned bgG=unsigned(std::round(region.background.g*bgA));
         unsigned bgB=unsigned(std::round(region.background.b*bgA));
         DWORD background=(bgA<<24)|(bgR<<16)|(bgG<<8)|bgB;
+        unsigned bdA=unsigned(std::round(region.borderColor.a*255));
+        DWORD borderPixel=(bdA<<24)|(unsigned(std::round(region.borderColor.r*bdA))<<16)|(unsigned(std::round(region.borderColor.g*bdA))<<8)|unsigned(std::round(region.borderColor.b*bdA));
         auto dest=static_cast<DWORD*>(bits);
         auto corePixels=reinterpret_cast<const DWORD*>(cpuCore.bits);
         auto haloPixels=reinterpret_cast<const DWORD*>(cpuHalo.bits);
+        bool doShimmer=region.shimmer&&region.shimmerStrength>0.f;
+        float sweep=0.f,invW=1.f/float(std::max(1,width)),invH=1.f/float(std::max(1,height));
+        unsigned shR=unsigned(std::round(region.shimmerColor.r*255.f));
+        unsigned shG=unsigned(std::round(region.shimmerColor.g*255.f));
+        unsigned shB=unsigned(std::round(region.shimmerColor.b*255.f));
+        if(doShimmer){
+            double shPhase=std::fmod(std::max(0.0,seconds),double(region.shimmerPeriod))/double(region.shimmerPeriod);
+            sweep=-0.35f+float(shPhase)*1.70f;
+        }
         for(int y=0;y<height;y++)for(int x=0;x<width;x++){
             DWORD text=0;
             for(int i=0;i<count;i++){
@@ -232,21 +301,65 @@ struct Surface {
             }
             unsigned mask=featherMask[x];
             if(mask!=255)text=multiply(text,mask);
-            dest[size_t(y)*width+x]=text?over(text,background):background;
+            size_t idx=size_t(y)*width+x;
+            DWORD bg=bgPixels.empty()?background:bgPixels[idx];
+            DWORD pixel=text?over(text,bg):bg;
+            if(doShimmer){
+                float diag=(x+0.5f)*invW+0.35f*((y+0.5f)*invH-0.5f);
+                float dist=std::abs(diag-sweep);
+                if(dist<0.22f){
+                    float u=1.f-dist/0.22f;
+                    unsigned shA=unsigned(std::round(u*u*region.shimmerStrength*255.f));
+                    if(shA){
+                        DWORD shPx=(shA<<24)|(((shR*shA+127)/255)<<16)|(((shG*shA+127)/255)<<8)|((shB*shA+127)/255);
+                        pixel=over(shPx,pixel);
+                    }
+                }
+            }
+            if(!shapeMask.empty()){
+                if(!borderMask.empty()&&borderMask[idx])pixel=over(multiply(borderPixel,borderMask[idx]),pixel);
+                if(shapeMask[idx]!=255)pixel=multiply(pixel,shapeMask[idx]);
+            }
+            dest[idx]=pixel;
         }
     }
     void render(int x,int y,double seconds=0,bool upload=true){
         auto start=std::chrono::steady_clock::now();
         if(cpuCore.dc)composite(seconds);
         else {
-        rt->BeginDraw();rt->Clear(region.background);
+        rt->BeginDraw();
+        float r=std::min({region.cornerRadius,region.width*0.5f,region.height*0.5f});
+        if(region.bgGradient){
+            rt->Clear(D2D1::ColorF(0,0));
+            float rad=region.bgGradientAngle*3.14159265358979323846f/180.f;
+            float dx=std::sin(rad),dy=-std::cos(rad);
+            float span=std::max(0.5f,0.5f*(std::abs(dx)+std::abs(dy)));
+            float cx=region.width*0.5f,cy=region.height*0.5f;
+            float ex=region.width*dx*span,ey=region.height*dy*span;
+            D2D1_GRADIENT_STOP stops[2]={{0.f,region.background},{1.f,region.bgGradientColor}};
+            Com<ID2D1GradientStopCollection> coll;
+            check(rt->CreateGradientStopCollection(stops,2,D2D1_GAMMA_2_2,D2D1_EXTEND_MODE_CLAMP,coll.put()));
+            Com<ID2D1LinearGradientBrush> gradBrush;
+            check(rt->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(D2D1::Point2F(cx-ex,cy-ey),D2D1::Point2F(cx+ex,cy+ey)),coll.value,gradBrush.put()));
+            if(region.cornerRadius>0||region.border)
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(0,0,region.width,region.height),r,r),gradBrush.value);
+            else
+                rt->FillRectangle(D2D1::RectF(0,0,region.width,region.height),gradBrush.value);
+        }else if(region.cornerRadius>0||region.border){
+            rt->Clear(D2D1::ColorF(0,0));
+            Com<ID2D1SolidColorBrush> bgBrush;
+            check(rt->CreateSolidColorBrush(region.background,bgBrush.put()));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(0,0,region.width,region.height),r,r),bgBrush.value);
+        }else{
+            rt->Clear(region.background);
+        }
         if(fadeLayer.value)rt->PushLayer(D2D1::LayerParameters(D2D1::RectF(0,0,region.width,region.height),nullptr,
             D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),1,fadeBrush.value),fadeLayer.value);
+        double period=scroll_period();
+        double phase=std::fmod(seconds*region.speed,period);
+        double offset=region.scroll?(region.right?phase-period:-phase):0;
+        int copies=scroll_copies(period);
         if(core.value){
-            double period=std::max(advance,std::max(1.f,region.width-2*region.padding))+region.gap;
-            double phase=std::fmod(seconds*region.speed,period);
-            double offset=region.scroll?(region.right?phase-period:-phase):0;
-            int copies=region.scroll?2:1;
             for(int i=0;i<copies;i++){
                 float left=float(offset+i*period)-margin+(region.scroll?region.padding:0);
                 auto dest=D2D1::RectF(left,0,left+spriteWidth,region.height);
@@ -258,25 +371,51 @@ struct Surface {
             }
         }else{
             // Budget exhaustion changes caching only, never the configured effects.
-            double period=std::max(advance,std::max(1.f,region.width-2*region.padding))+region.gap;
-            double phase=std::fmod(seconds*region.speed,period);
-            double offset=region.scroll?(region.right?phase-period:-phase):0;
-            for(int i=0;i<(region.scroll?2:1);i++){
+            for(int i=0;i<copies;i++){
                 float x=float(offset+i*period)+region.padding;
                 if(region.glow){
                     float opacity=region.glowStrength;
                     if(region.pulse)opacity*=.25f+.75f*(.5f+.5f*float(std::cos(seconds*6.283185307179586/region.glowPeriod)));
                     rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                         D2D1::IdentityMatrix(),opacity),nullptr);
-                    GlyphPainter glow(renderer,rt.value,region,true);
+                    GlyphPainter glow(renderer,rt.value,region,1);
                     HRESULT result=layout->Draw(nullptr,&glow,x,0);
                     rt->PopLayer();check(result);
                 }
-                GlyphPainter glyphs(renderer,rt.value,region,false);
+                if(region.shadow){
+                    GlyphPainter shadowGlyphs(renderer,rt.value,region,2);
+                    check(layout->Draw(nullptr,&shadowGlyphs,x+region.shadowOffsetX,region.shadowOffsetY));
+                }
+                GlyphPainter glyphs(renderer,rt.value,region,0);
                 check(layout->Draw(nullptr,&glyphs,x,0));missingGlyphs=glyphs.missingGlyphs;
             }
         }
         if(fadeLayer.value)rt->PopLayer();
+        if(region.shimmer&&region.shimmerStrength>0.f){
+            double shPhase=std::fmod(std::max(0.0,seconds),double(region.shimmerPeriod))/double(region.shimmerPeriod);
+            float sweep=-0.35f+float(shPhase)*1.70f;
+            float cx=sweep*region.width,cy=region.height*0.5f;
+            float bandW=0.22f*region.width;
+            float bandDx=bandW,bandDy=bandW*0.35f*(region.height/std::max(1.f,region.width));
+            auto c0=region.shimmerColor;c0.a=0.f;
+            auto c1=region.shimmerColor;c1.a=region.shimmerStrength;
+            D2D1_GRADIENT_STOP stops[3]={{0.f,c0},{0.5f,c1},{1.f,c0}};
+            Com<ID2D1GradientStopCollection> coll;
+            check(rt->CreateGradientStopCollection(stops,3,D2D1_GAMMA_2_2,D2D1_EXTEND_MODE_CLAMP,coll.put()));
+            Com<ID2D1LinearGradientBrush> shBrush;
+            check(rt->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(D2D1::Point2F(cx-bandDx,cy-bandDy),D2D1::Point2F(cx+bandDx,cy+bandDy)),coll.value,shBrush.put()));
+            if(region.cornerRadius>0||region.border)
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(0,0,region.width,region.height),r,r),shBrush.value);
+            else
+                rt->FillRectangle(D2D1::RectF(0,0,region.width,region.height),shBrush.value);
+        }
+        if(region.border){
+            Com<ID2D1SolidColorBrush> borderBrush;
+            check(rt->CreateSolidColorBrush(region.borderColor,borderBrush.put()));
+            float half=region.borderWidth*0.5f;
+            float r=std::min({region.cornerRadius,region.width*0.5f,region.height*0.5f});
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(half,half,region.width-half,region.height-half),std::max(0.f,r-half),std::max(0.f,r-half)),borderBrush.value,region.borderWidth);
+        }
         check(rt->EndDraw());
         check(bitmap->CopyPixels(nullptr,width*4,width*height*4,static_cast<BYTE*>(bits)));
         }

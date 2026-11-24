@@ -18,7 +18,11 @@ inline const json& region_defaults(){
         {"scroll_direction","left"},{"scroll_speed",40},{"scroll_gap",40},{"scroll_feather",false},
         {"scroll_feather_width",24},{"outline",false},{"outline_width",1.5},{"outline_color","#000000"},
         {"glow",false},{"glow_color","#2ab89d"},{"glow_radius",10},{"glow_strength",75},
-        {"glow_pulse",true},{"glow_period",2.0}};
+        {"glow_pulse",true},{"glow_period",2.0},{"hidden",false},
+        {"scroll_fill",false},{"corner_radius",0},{"border",false},{"border_width",1.5},{"border_color","#c9ee46"},
+        {"bg_gradient",false},{"bg_gradient_color","#3d2f66"},{"bg_gradient_angle",135},
+        {"shadow",false},{"shadow_color","#000000"},{"shadow_offset_x",2.0},{"shadow_offset_y",2.0},
+        {"shimmer",false},{"shimmer_color","#ffffff"},{"shimmer_period",2.5},{"shimmer_strength",45}};
     return defaults;
 }
 inline json canonical_region(const json& input){
@@ -31,20 +35,26 @@ inline json canonical_region(const json& input){
     if(id.size()!=32||id.find_first_not_of("0123456789abcdefABCDEF")!=std::string::npos)throw std::runtime_error("Invalid region ID");
     for(auto key:{"x","y","width","height"})result[key]=number(result,key,0,(key[0]=='x'||key[0]=='y')?0:8,100000);
     for(auto key:{"reference_width","reference_height"})result[key]=number(result,key,0,0,100000);
-    for(auto key:{"size","opacity","padding","scroll_speed","scroll_gap","scroll_feather_width","glow_radius","glow_strength"}){
+    for(auto key:{"size","opacity","padding","scroll_speed","scroll_gap","scroll_feather_width","glow_radius","glow_strength","corner_radius","bg_gradient_angle","shimmer_strength"}){
         double low=0,high=100;
         std::string name=key;
         if(name=="size"){low=6;high=200;}else if(name=="opacity")high=255;
+        else if(name=="corner_radius")high=64;
+        else if(name=="bg_gradient_angle")high=360;
         else if(name=="scroll_speed"){low=5;high=300;}else if(name=="scroll_gap"){low=8;high=300;}
         else if(name=="scroll_feather_width"){low=1;high=200;}else if(name=="glow_radius"){low=1;high=24;}
         result[key]=int(number(result,key,0,low,high));
     }
     result["letter_spacing"]=number(result,"letter_spacing",0,-10,50);
     result["outline_width"]=number(result,"outline_width",1.5,.5,12);
+    result["border_width"]=number(result,"border_width",1.5,.5,12);
     result["glow_period"]=number(result,"glow_period",2,.5,10);
-    for(auto key:{"bold","scroll","scroll_feather","outline","glow","glow_pulse"})
+    result["shadow_offset_x"]=number(result,"shadow_offset_x",2.0,-20,20);
+    result["shadow_offset_y"]=number(result,"shadow_offset_y",2.0,-20,20);
+    result["shimmer_period"]=number(result,"shimmer_period",2.5,.5,10);
+    for(auto key:{"bold","scroll","scroll_feather","outline","glow","glow_pulse","hidden","scroll_fill","border","bg_gradient","shadow","shimmer"})
         if(!result[key].is_boolean())throw std::runtime_error("Region flag must be boolean");
-    for(auto key:{"text","font","color","background","outline_color","glow_color","align","scroll_direction","anchor_x","anchor_y"})
+    for(auto key:{"text","font","color","background","outline_color","glow_color","border_color","bg_gradient_color","shadow_color","shimmer_color","align","scroll_direction","anchor_x","anchor_y"})
         wide(result[key].get<std::string>());
     if(result["anchor_x"]!="left"&&result["anchor_x"]!="center"&&result["anchor_x"]!="right")result["anchor_x"]="left";
     if(result["anchor_y"]!="top"&&result["anchor_y"]!="center"&&result["anchor_y"]!="bottom")result["anchor_y"]="top";
@@ -188,6 +198,7 @@ struct ConfigState {
     }
     Region positioned(int i)const{
         Region region(document["regions"][i]);region.locate(viewportWidth,viewportHeight);
+        if(region.hidden){region.drawable=false;return region;}
         if(region.visual){
             auto id=document["regions"][i]["id"].get<std::string>();auto found=visualPositions.find(id);
             auto retained=confirmedBoundaries.find(id);

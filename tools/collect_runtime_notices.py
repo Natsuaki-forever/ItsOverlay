@@ -10,17 +10,17 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def collect(destination,vision_deps=None,native_editor=False):
-    if native_editor and not vision_deps:
+def collect(destination,vision_deps=None,native_editor=True):
+    # Only the optional visual worker ships a Python runtime; packaged editors
+    # are native (Slint or frozen Win32). Qt runtime notices were retired with
+    # `codex/archive-qt-editor`.
+    if not vision_deps:
         return
     destination=Path(destination)/'runtime'
     destination.mkdir(parents=True,exist_ok=True)
-    if not native_editor:
-        shutil.copytree(ROOT/'third_party/runtime-licenses',destination/'qt-license-texts',dirs_exist_ok=True)
     shutil.copyfile(Path(sys.base_prefix)/'LICENSE.txt',destination/'Python-LICENSE.txt')
     versions={'Python':sys.version.split()[0]}
-    runtime_packages=('PyInstaller',) if native_editor else ('PySide6_Essentials','shiboken6','PyInstaller')
-    packages=[(name,distribution(name)) for name in runtime_packages]
+    packages=[('PyInstaller',distribution('PyInstaller'))]
     if vision_deps:
         packages.append(('numpy',distribution('numpy')))
         local=list(distributions(path=[str(Path(vision_deps).resolve(strict=True))]))

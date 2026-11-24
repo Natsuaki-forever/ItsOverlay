@@ -98,6 +98,10 @@ struct NormalSurfaces {
             }plan=std::move(next);
             for(auto& group:plan)windows.push_back(group.indices.size()>1?std::make_unique<GroupWindow>(renderer):nullptr);
         }
+        for(size_t i=0;i<surfaces.size();i++){
+            bool activeSingle=std::any_of(plan.begin(),plan.end(),[&](const auto& g){return g.indices.size()==1&&g.indices[0]==i;});
+            if(!activeSingle)surfaces[i]->hide();
+        }
         for(size_t i=0;i<plan.size();i++){
             if(plan[i].indices.size()==1)surfaces[plan[i].indices[0]]->ensure_window();
             else{

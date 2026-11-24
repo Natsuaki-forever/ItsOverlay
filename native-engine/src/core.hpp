@@ -94,16 +94,19 @@ struct Region {
     std::wstring text, family;
     float x,y,width,height,size,padding,spacing;
     float storedX,storedY,referenceWidth,referenceHeight;
-    bool visual=false,drawable=true;
+    bool visual=false,hidden=false,drawable=true;
     std::string anchorX,anchorY;
     float opacity;
-    bool bold,scroll,glow,outline,feather,pulse;
-    float speed,gap,glowRadius,glowStrength,glowPeriod,outlineWidth,featherWidth;
+    bool bold,scroll,glow,outline,feather,pulse,scrollFill,border,bgGradient,shadow,shimmer;
+    float speed,gap,glowRadius,glowStrength,glowPeriod,outlineWidth,featherWidth,cornerRadius,borderWidth;
+    float bgGradientAngle,shadowOffsetX,shadowOffsetY,shimmerPeriod,shimmerStrength;
     bool right;
     std::string align;
-    D2D1_COLOR_F foreground, background, glowColor, outlineColor;
+    D2D1_COLOR_F foreground, background, glowColor, outlineColor, borderColor, bgGradientColor, shadowColor, shimmerColor;
     explicit Region(const json& j): source(j) {
-        visual=j.value("position_mode",std::string("anchor"))=="visual";drawable=!visual;
+        visual=j.value("position_mode",std::string("anchor"))=="visual";
+        hidden=j.value("hidden",false);
+        drawable=!visual&&!hidden;
         text=wide(j.value("text", std::string("我的工作台")));
         family=wide(j.value("font", std::string("Segoe UI")));
         x=float(number(j,"x",20,0,100000)); y=float(number(j,"y",20,0,100000));
@@ -116,24 +119,36 @@ struct Region {
         spacing=float(number(j,"letter_spacing",0,-10,50)); opacity=float(number(j,"opacity",255,0,255))/255;
         bold=j.value("bold",false); scroll=j.value("scroll",false); glow=j.value("glow",false); outline=j.value("outline",false);
         feather=j.value("scroll_feather",false); pulse=j.value("glow_pulse",true);
+        scrollFill=j.value("scroll_fill",false); border=j.value("border",false);
+        bgGradient=j.value("bg_gradient",false); shadow=j.value("shadow",false); shimmer=j.value("shimmer",false);
         speed=float(number(j,"scroll_speed",40,5,300)); gap=float(number(j,"scroll_gap",40,8,300));
         glowRadius=float(number(j,"glow_radius",10,1,24)); glowStrength=float(number(j,"glow_strength",75,0,100))/100;
         glowPeriod=float(number(j,"glow_period",2,.5,10)); outlineWidth=float(number(j,"outline_width",1.5,.5,12));
         featherWidth=float(number(j,"scroll_feather_width",24,1,200));
+        cornerRadius=float(number(j,"corner_radius",0,0,64)); borderWidth=float(number(j,"border_width",1.5,.5,12));
+        bgGradientAngle=float(number(j,"bg_gradient_angle",135,0,360));
+        shadowOffsetX=float(number(j,"shadow_offset_x",2.0,-20,20));
+        shadowOffsetY=float(number(j,"shadow_offset_y",2.0,-20,20));
+        shimmerPeriod=float(number(j,"shimmer_period",2.5,.5,10));
+        shimmerStrength=float(number(j,"shimmer_strength",45,0,100))/100.f;
         right=j.value("scroll_direction",std::string("left"))=="right";
         align=j.value("align",std::string("left"));
         foreground=color(j.value("color",std::string("#ececec")));
         background=color(j.value("background",std::string("#212121")), opacity);
         glowColor=color(j.value("glow_color",std::string("#2ab89d")));
         outlineColor=color(j.value("outline_color",std::string("#000000")));
+        borderColor=color(j.value("border_color",std::string("#c9ee46")));
+        bgGradientColor=color(j.value("bg_gradient_color",std::string("#3d2f66")), opacity);
+        shadowColor=color(j.value("shadow_color",std::string("#000000")), 0.72f);
+        shimmerColor=color(j.value("shimmer_color",std::string("#ffffff")));
     }
     void locate(float clientWidth,float clientHeight){
-        if(visual){drawable=false;return;}
+        if(visual||hidden){drawable=false;return;}
         drawable=true;
         float horizontal=anchorX=="right"?1.f:anchorX=="center"?.5f:0.f;
         float vertical=anchorY=="bottom"?1.f:anchorY=="center"?.5f:0.f;
         x=std::max(0.f,storedX+(referenceWidth>0&&clientWidth>0?clientWidth-referenceWidth:0)*horizontal);
         y=std::max(0.f,storedY+(referenceHeight>0&&clientHeight>0?clientHeight-referenceHeight:0)*vertical);
     }
-    bool animated() const { return !text.empty() && (scroll || (glow && pulse && glowStrength)); }
+    bool animated() const { return (shimmer && shimmerStrength > 0.f) || (!text.empty() && (scroll || (glow && pulse && glowStrength))); }
 };

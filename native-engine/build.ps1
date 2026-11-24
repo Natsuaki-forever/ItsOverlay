@@ -4,18 +4,23 @@ param(
     [string]$SdkRoot,
     [switch]$VisualCaptureProbe,
     [Alias('EditorPrototype')][switch]$Editor,
-    [switch]$SlintEditor
+    [switch]$SlintEditor,
+    [switch]$VisionWorker
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
-if (@($VisualCaptureProbe, $Editor, $SlintEditor).Where({$_}).Count -gt 1) { throw 'Choose one build target' }
-if (($VisualCaptureProbe -or $Editor -or $SlintEditor) -and $Output -eq 'build\native-prototype') { throw 'Choose a separate -Output for the selected target' }
+if (@($VisualCaptureProbe, $Editor, $SlintEditor, $VisionWorker).Where({$_}).Count -gt 1) { throw 'Choose one build target' }
+if (($VisualCaptureProbe -or $Editor -or $SlintEditor -or $VisionWorker) -and $Output -eq 'build\native-prototype') { throw 'Choose a separate -Output for the selected target' }
 $sourceFile = if ($VisualCaptureProbe) { 'tests\native_visual_capture.cpp' } elseif ($Editor) {
     'native-engine\editor\panel.cpp'
+} elseif ($VisionWorker) {
+    'native-engine\vision\main.cpp'
 } else { 'native-engine\src\main.cpp' }
 $executableName = if ($VisualCaptureProbe) { 'OverlayVisualCaptureProbe.exe' } elseif ($Editor) {
     'OverlayNativeEditorPrototype.exe'
+} elseif ($VisionWorker) {
+    'OverlayVision.exe'
 } else { 'OverlayNative.exe' }
 $extraLibraries = if ($Editor) { @('comdlg32.lib', 'imm32.lib', 'comctl32.lib', 'gdiplus.lib') } else { @() }
 if (-not $MsvcRoot) {
@@ -67,7 +72,15 @@ try {
         }
         return
     }
-    & "$msvc\bin\Hostx64\x64\cl.exe" /nologo /std:c++17 /O2 /EHsc /utf-8 /MT /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN $sourceFile "/Fo$Output\main.obj" "/Fe$Output\$executableName" /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:app.manifest user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib windowscodecs.lib ole32.lib shell32.lib advapi32.lib psapi.lib @extraLibraries
+    $resourceArgs = @()
+    $iconRc = Join-Path $projectRoot 'assets\app-icon.rc'
+    if (-not $VisualCaptureProbe -and -not $VisionWorker -and (Test-Path -LiteralPath $iconRc -PathType Leaf)) {
+        $iconRes = Join-Path $Output 'app-icon.res'
+        & "$sdk\bin\$($sdkVersion.Name)\x64\rc.exe" /nologo /fo $iconRes $iconRc
+        if ($LASTEXITCODE -ne 0) { throw 'Resource compilation failed' }
+        $resourceArgs += $iconRes
+    }
+    & "$msvc\bin\Hostx64\x64\cl.exe" /nologo /std:c++17 /O2 /EHsc /utf-8 /MT /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN $sourceFile "/Fo$Output\main.obj" "/Fe$Output\$executableName" /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:app.manifest user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib windowscodecs.lib ole32.lib shell32.lib advapi32.lib psapi.lib @extraLibraries @resourceArgs
     if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
     $licenseDirectory = Join-Path $Output 'licenses'
     New-Item -ItemType Directory -Path $licenseDirectory -Force | Out-Null

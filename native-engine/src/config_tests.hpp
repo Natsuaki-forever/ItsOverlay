@@ -64,6 +64,27 @@ inline void config_tests(const fs::path& output){
     anchored.update_positioned(anchoredId,{{"anchor_x","left"},{"anchor_y","top"}},anchored.revision);
     anchored.set_viewport(1300,900);
     require(anchored.positioned(0).x==720&&anchored.positioned(0).y==460,"switching back to left/top changed current position");
+    require(anchored.document["regions"][0]["hidden"]==false,"hidden should default to false");
+    anchored.update(anchoredId,{{"hidden",true}},anchored.revision);
+    require(!anchored.positioned(0).drawable,"hidden region should not be drawable");
+    anchored.save();ConfigState reloadedHidden(anchored.path);reloadedHidden.set_viewport(1300,900);
+    require(reloadedHidden.document["regions"][0]["hidden"]==true&&!reloadedHidden.positioned(0).drawable,"hidden state did not roundtrip");
+    reloadedHidden.update(anchoredId,{{"scroll_fill",true},{"corner_radius",16},{"border",true},{"border_width",2.5},{"border_color","#58a6ff"}},reloadedHidden.revision);
+    reloadedHidden.save();ConfigState reloadedBatchA(reloadedHidden.path);
+    require(reloadedBatchA.document["regions"][0]["scroll_fill"]==true&&reloadedBatchA.document["regions"][0]["corner_radius"]==16&&
+        reloadedBatchA.document["regions"][0]["border"]==true&&reloadedBatchA.document["regions"][0]["border_width"]==2.5&&
+        reloadedBatchA.document["regions"][0]["border_color"]=="#58a6ff","Batch A effect fields did not roundtrip");
+    reloadedBatchA.update(anchoredId,{{"bg_gradient",true},{"bg_gradient_color","#1a2b3c"},{"bg_gradient_angle",45},
+        {"shadow",true},{"shadow_color","#112233"},{"shadow_offset_x",3.5},{"shadow_offset_y",-2.5},
+        {"shimmer",true},{"shimmer_color","#ffeedd"},{"shimmer_period",3.0},{"shimmer_strength",60}},reloadedBatchA.revision);
+    reloadedBatchA.save();ConfigState reloadedBatchB(reloadedBatchA.path);
+    require(reloadedBatchB.document["regions"][0]["bg_gradient"]==true&&reloadedBatchB.document["regions"][0]["bg_gradient_color"]=="#1a2b3c"&&
+        reloadedBatchB.document["regions"][0]["bg_gradient_angle"]==45&&reloadedBatchB.document["regions"][0]["shadow"]==true&&
+        reloadedBatchB.document["regions"][0]["shadow_color"]=="#112233"&&reloadedBatchB.document["regions"][0]["shadow_offset_x"]==3.5&&
+        reloadedBatchB.document["regions"][0]["shadow_offset_y"]==-2.5&&reloadedBatchB.document["regions"][0]["shimmer"]==true&&
+        reloadedBatchB.document["regions"][0]["shimmer_color"]=="#ffeedd"&&reloadedBatchB.document["regions"][0]["shimmer_period"]==3.0&&
+        reloadedBatchB.document["regions"][0]["shimmer_strength"]==60,"Batch B effect fields did not roundtrip");
+    require(Region(reloadedBatchB.document["regions"][0]).animated(),"shimmer should mark region as animated");
     std::ofstream(output/L"result.json")<<json({{"legacy_read_without_write",true},{"all_styles_roundtrip",true},
         {"stable_ids",true},{"revision_conflict",true},{"atomic_save_failure_and_retry",true},{"malformed_preserved",true},
         {"anchor_switch_no_jump",true},{"anchor_resize_without_config_write",true},{"anchor_coordinates_editable",true},

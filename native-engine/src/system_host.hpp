@@ -44,21 +44,28 @@ inline void Engine::queue_application(const std::string& id,const WindowIdentity
     pendingApplication=id;pendingApplicationWindow=identity;pendingApplicationPick=pick;pendingApplicationRemove=remove;
     pendingDeletion=deletion;
     pendingWindowProfile=profile;
-    resumeApplicationEditor=resumeApplicationEditor||editing||reopenEditor;
-    reopenEditor=false;
     if(editing){
-        // A drag may already have changed the in-memory preview. Cancel it before commit_close.
+        // A drag may already have changed the in-memory preview. Cancel it before switching or picking.
         set_canvas_mode(CanvasMode::Idle);hide_editing_canvas();
         if(visual&&visual->stage=="preview")visual->cancel_preview();
         if(calibrationEditorSuspended){visual->abort_calibration();calibrationEditorSuspended=false;}
         KillTimer(host,7);pickWaiting=false;pickId.clear();pickSession.clear();
         if(editCanvas)editCanvas->picking=false;
-        request_finish();sync();
-    }else PostMessageW(host,WM_APP+63,0,0);
+        if(pick){
+            resumeApplicationEditor=true;
+            request_finish();sync();
+        }else{
+            finish_application_action();
+        }
+    }else{
+        resumeApplicationEditor=resumeApplicationEditor||reopenEditor;
+        reopenEditor=false;
+        PostMessageW(host,WM_APP+63,0,0);
+    }
 }
 
 inline void Engine::finish_application_action(){
-    if(shutdownRequested||editorProcess.value||editing)return;
+    if(shutdownRequested||applicationActionRunning||((editorProcess.value||editing)&&pendingApplicationPick))return;
     if(!application_action_pending())return;
     auto requested=std::move(pendingApplication);pendingApplication.clear();
     auto identity=std::exchange(pendingApplicationWindow,WindowIdentity{});
@@ -147,6 +154,11 @@ inline void Engine::finish_application_action(){
             calibrationResult.clear();calibrationResultOwner.clear();
             targetIssue.clear();saveIssue.clear();renderIssue.clear();pickIssue.clear();editorIssue.clear();
             visual=std::move(nextVisual);
+            if(protocol)protocol->rebind(*configState);
+            if(editing){
+                if(visual)visual->begin_edit();
+                if(editCanvas){editCanvas->hide();editCanvas->preview=nullptr;editCanvas->coverDrag.reset();}
+            }
         }
         *applications=std::move(next);
         configState->applicationId=requested;
@@ -172,7 +184,7 @@ inline void Engine::finish_application_action(){
             resumeApplicationEditor=true;
         }
         sync();
-        if(deletion.empty()&&!diagnostic&&!restoringWindow&&available(target))SetForegroundWindow(target);
+        if(deletion.empty()&&!diagnostic&&!restoringWindow&&!editing&&available(target))SetForegroundWindow(target);
         if(shell&&!deletion.empty())shell->notice(L"已删除应用的遮盖和配置。");
         else if(shell&&!target)shell->notice(remove?L"已从列表移除。遮盖和视觉模板已保留，请从面板选择下一个应用。":
             awaiting_window_choice()?L"请从面板的应用菜单选择要绑定的窗口。":
@@ -183,7 +195,7 @@ inline void Engine::finish_application_action(){
         sync();
     }
     applicationActionRunning=false;
-    if(std::exchange(resumeApplicationEditor,false))open_or_restore_editor();
+    if(!editing&&std::exchange(resumeApplicationEditor,false))open_or_restore_editor();
 }
 
 inline void Engine::request_quit(){
@@ -260,7 +272,9 @@ inline void Engine::system_command(UINT command){
                 throw std::runtime_error("Cannot open configuration directory");
         }else if(command==NativeShell::Startup)shell->toggle_startup();
         else if(command==NativeShell::Help){
-            MessageBoxW(host,L"从托盘点选并保存应用窗口，再按 Ctrl+Shift+E 打开或恢复编辑器。\n\n在空白处拖动创建矩形；拖动矩形移动，拖动右下角缩放。\n属性面板调整文字、背景和动画。Delete 删除，方向键微调。\nEsc 取消当前手势，或保存并结束编辑。\n\n各应用单独保存遮盖和视觉模板。目标关闭后，只有一个可用候选时自动重连。",L"ChatGPT Overlay · 使用说明",MB_OK|MB_ICONINFORMATION);
+            std::wstring hk=(shell->hotkeySpec.empty()||shell->hotkeySpec=="None")?L"点击托盘图标":(L"按 "+wide(shell->hotkeySpec));
+            std::wstring msg=L"从托盘点选并保存应用窗口，再"+hk+L"打开或恢复编辑器。\n\n在空白处拖动创建矩形；拖动矩形移动，拖动右下角缩放。\n属性面板调整文字、背景和动画。Delete 删除，方向键微调。\nEsc 取消当前手势，或保存并结束编辑。\n\n各应用单独保存遮盖和视觉模板。目标关闭后，只有一个可用候选时自动重连。";
+            MessageBoxW(host,msg.c_str(),L"ItsOverlay - 就是遮 · 使用说明",MB_OK|MB_ICONINFORMATION);
         }else if(command>=NativeShell::TargetFirst&&command-NativeShell::TargetFirst<shell->targets.size()){
             HWND candidate=shell->targets[command-NativeShell::TargetFirst];
             if(!available(candidate)||!is_chatgpt(candidate)||GetWindow(candidate,GW_OWNER))throw std::runtime_error("Target is no longer available");

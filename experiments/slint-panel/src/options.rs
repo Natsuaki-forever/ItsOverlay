@@ -25,16 +25,23 @@ macro_rules! field {
 const FIELDS: &[Field] = &[
     field!(0,"font","字体"), field!(0,"size","字号"), field!(0,"bold","粗体",ON_OFF),
     field!(0,"align","对齐",ALIGN), field!(0,"padding","文字边距"), field!(0,"letter_spacing","字距"),
-    field!(0,"color","文字颜色"),
+    field!(0,"color","文字颜色"), field!(0,"opacity","不透明度"), field!(0,"background","背景颜色"),
+    field!(0,"corner_radius","圆角半径"),
+    field!(0,"border","卡片边框",ON_OFF), field!(0,"border_width","边框粗细"), field!(0,"border_color","边框颜色"),
     field!(1,"x","X"), field!(1,"y","Y"), field!(1,"width","宽度"), field!(1,"height","高度"),
     field!(1,"anchor_x","横向定位",ANCHOR_X), field!(1,"anchor_y","纵向定位",ANCHOR_Y),
-    field!(2,"opacity","不透明度"), field!(2,"background","背景颜色"),
-    field!(3,"scroll","循环滚动",ON_OFF), field!(3,"scroll_direction","方向",DIRECTION),
-    field!(3,"scroll_feather","两侧渐隐",ON_OFF), field!(3,"scroll_feather_width","羽化宽度"),
-    field!(3,"scroll_speed","速度"), field!(3,"scroll_gap","循环间距"),
-    field!(5,"outline","描边",ON_OFF), field!(5,"outline_width","描边宽度"), field!(5,"outline_color","描边颜色"),
-    field!(6,"glow","发光",ON_OFF), field!(6,"glow_color","发光颜色"), field!(6,"glow_radius","发光半径"),
-    field!(6,"glow_strength","发光强度"), field!(6,"glow_pulse","呼吸",ON_OFF), field!(6,"glow_period","呼吸周期"),
+    field!(2,"scroll","循环滚动",ON_OFF), field!(2,"scroll_direction","滚动方向",DIRECTION),
+    field!(2,"scroll_speed","滚动速度"), field!(2,"scroll_gap","循环间距"),
+    field!(2,"scroll_feather","两侧渐隐",ON_OFF), field!(2,"scroll_feather_width","羽化宽度"),
+    field!(2,"outline","文字描边",ON_OFF), field!(2,"outline_width","描边宽度"), field!(2,"outline_color","描边颜色"),
+    field!(2,"glow","霓虹发光",ON_OFF), field!(2,"glow_color","发光颜色"), field!(2,"glow_radius","发光半径"),
+    field!(2,"glow_strength","发光强度"), field!(2,"glow_pulse","呼吸效果",ON_OFF), field!(2,"glow_period","呼吸周期"),
+    field!(2,"scroll_fill","无缝铺满",ON_OFF),
+    field!(2,"bg_gradient","背景渐变",ON_OFF), field!(2,"bg_gradient_color","渐变副色"), field!(2,"bg_gradient_angle","渐变角度"),
+    field!(2,"shadow","文字投影",ON_OFF), field!(2,"shadow_color","投影颜色"),
+    field!(2,"shadow_offset_x","水平偏移"), field!(2,"shadow_offset_y","垂直偏移"),
+    field!(2,"shimmer","流光扫光",ON_OFF), field!(2,"shimmer_color","流光颜色"),
+    field!(2,"shimmer_period","扫光周期"), field!(2,"shimmer_strength","流光强度"),
 ];
 
 fn row(key: &str, label: &str, value: &Value, options: &[(&str, &str)]) -> Setting {
@@ -55,7 +62,7 @@ fn row(key: &str, label: &str, value: &Value, options: &[(&str, &str)]) -> Setti
         (options.iter().map(|(label, _)| SharedString::from(*label)).collect(),
             options.iter().position(|(_, item)| *item == value).map_or(-1, |i| i as i32))
     };
-    let swatch = matches!(key, "background" | "color" | "outline_color" | "glow_color")
+    let swatch = matches!(key, "background" | "color" | "outline_color" | "glow_color" | "border_color" | "bg_gradient_color" | "shadow_color" | "shimmer_color")
         .then(|| value.strip_prefix('#'))
         .flatten()
         .filter(|hex| hex.len() == 6)
@@ -69,6 +76,13 @@ fn row(key: &str, label: &str, value: &Value, options: &[(&str, &str)]) -> Setti
         "glow_radius" => (1., 24., 1.),
         "glow_strength" => (0., 100., 1.),
         "glow_period" => (0.5, 10., 0.1),
+        "corner_radius" => (0., 64., 1.),
+        "border_width" => (0.5, 12., 0.5),
+        "bg_gradient_angle" => (0., 360., 5.),
+        "shadow_offset_x" => (-12., 12., 1.),
+        "shadow_offset_y" => (-12., 12., 1.),
+        "shimmer_period" => (0.5, 10., 0.1),
+        "shimmer_strength" => (0., 100., 1.),
         _ => (0., 0., 1.),
     };
     let number = value.parse().unwrap_or(minimum);
@@ -94,10 +108,6 @@ fn row(key: &str, label: &str, value: &Value, options: &[(&str, &str)]) -> Setti
             else if key.starts_with("relation.") || matches!(key, "begin_cover_drag" | "commit_cover_drag") { 1 }
             else { 0 },
     }
-}
-
-fn action(key: &str, label: &str) -> Setting {
-    Setting { action: true, ..row(key,label,&Value::Null,&[]) }
 }
 
 fn coordinate_fields(rows: &mut Vec<Setting>, key: &str, labels: &[&str], values: &Value) {
@@ -127,69 +137,39 @@ fn geometry_value(current: &Value, text: &str, index: i32, minimum: Option<f64>)
 }
 
 pub fn settings(state: &Value, region: &Value, page: i32) -> ModelRc<Setting> {
+    let page = page.clamp(0, 2);
     let mut rows = Vec::new();
     let id = region["id"].as_str().unwrap_or("");
     let visual = region["position_mode"] == "visual";
+    let preview = &state["calibration_preview"];
     if !id.is_empty() {
-        for field in FIELDS.iter().filter(|field| field.page == page && (page != 1 || !visual)) {
+        for field in FIELDS.iter().filter(|field| {
+            field.page == page && (page != 1 || (!visual && !preview.is_object()))
+        }) {
             let value = state["effective_positions"][id].get(field.key).unwrap_or(&region[field.key]);
             rows.push(row(field.key, field.label, value, field.options));
         }
-        match page {
-            0 => rows.push(action("pick_text", "取色")),
-            2 => rows.push(action("pick_background", "取色")),
-            4 => {
-                let preview = &state["calibration_preview"];
-                let binding = &region["visual_binding"];
-                if preview.is_object() {
-                    if preview["reference"].is_array() {
-                        rows.push(action("confirm_calibration", "确认校准"));
-                    }
-                    rows.push(action("pick_calibration_reference", "重选参考区域"));
-                    rows.push(action("cancel_calibration", "取消校准"));
-                    if preview["reference"].is_array() {
-                        coordinate_fields(&mut rows, "reference", &["参考 X","参考 Y","参考宽","参考高"], &preview["reference"]);
-                    }
+        if page == 1 && (visual || preview.is_object()) {
+            let binding = &region["visual_binding"];
+            rows.push(row("interval", "兜底检查", &state["visual_check_interval_seconds"], INTERVAL));
+            let relation = if preview.is_object() { &preview["relation"] } else { &binding["relation"] };
+            if relation.is_object() && (visual || preview["reference"].is_array()) {
+                let kind = if preview.is_object() { &preview["tracking_kind"] } else { &binding["tracking_kind"] };
+                if kind != "features" { rows.push(row("relation.mode", "遮盖跟随", &relation["mode"], RELATION_MODE)); }
+                if relation["mode"] == "position_only" {
+                    rows.push(row("relation.anchor_x", "水平基准", &relation["anchor_x"], ANCHOR_X));
+                    rows.push(row("relation.anchor_y", "垂直基准", &relation["anchor_y"], ANCHOR_Y));
+                    coordinate_fields(&mut rows, "relation.offset_dip", &["X 偏移","Y 偏移"], &relation["offset_dip"]);
+                    coordinate_fields(&mut rows, "relation.fixed_size_dip", &["遮盖宽","遮盖高"], &relation["fixed_size_dip"]);
                 } else {
-                    rows.push(action("begin_features", "选择文字或图案参考"));
-                    rows.push(action("begin_boundary", "选择完整边框参考"));
-                    if state["calibration_retry_available"] == true { rows.push(action("retry_calibration","重试校准")); }
-                    if visual {
-                        rows.push(action("refresh_visual", "重新定位"));
-                        rows.push(action("anchor", "改用窗口锚定"));
-                        coordinate_fields(&mut rows, "reference", &["参考 X","参考 Y","参考宽","参考高"], &binding["reference_rect_dip"]);
-                        if binding["tracking_kind"] == "features" {
-                            rows.push(row("search", "找回距离 (DIP)", &binding["search_limit_dip"], &[]));
-                        }
-                    } else if binding.is_object() {
-                        rows.push(action("resume", "恢复视觉校准"));
-                    }
+                    coordinate_fields(&mut rows, "relation.margins_dip", &["左边距","上边距","右边距","下边距"], &relation["margins_dip"]);
                 }
-                let relation = if preview.is_object() { &preview["relation"] } else { &binding["relation"] };
-                if relation.is_object() && (visual || preview["reference"].is_array()) {
-                    let kind = if preview.is_object() { &preview["tracking_kind"] } else { &binding["tracking_kind"] };
-                    if kind != "features" { rows.push(row("relation.mode", "遮盖跟随", &relation["mode"], RELATION_MODE)); }
-                    if relation["mode"] == "position_only" {
-                        rows.push(row("relation.anchor_x", "水平基准", &relation["anchor_x"], ANCHOR_X));
-                        rows.push(row("relation.anchor_y", "垂直基准", &relation["anchor_y"], ANCHOR_Y));
-                        coordinate_fields(&mut rows, "relation.offset_dip", &["X 偏移","Y 偏移"], &relation["offset_dip"]);
-                        coordinate_fields(&mut rows, "relation.fixed_size_dip", &["遮盖宽","遮盖高"], &relation["fixed_size_dip"]);
-                    } else {
-                        coordinate_fields(&mut rows, "relation.margins_dip", &["左边距","上边距","右边距","下边距"], &relation["margins_dip"]);
-                    }
-                    rows.push(row("relation.padding_physical", "防漏边像素", &relation["padding_physical"], &[]));
-                    if visual && !preview.is_object() {
-                        let control = if state["canvas_mode"] == "cover_draft" {
-                            action("commit_cover_drag", "保存遮盖位置")
-                        } else {
-                            action("begin_cover_drag", "拖动遮盖")
-                        };
-                        rows.push(control);
-                    }
-                }
-                rows.push(row("interval","兜底检查",&state["visual_check_interval_seconds"],INTERVAL));
+                rows.push(row("relation.padding_physical", "防漏边像素", &relation["padding_physical"], &[]));
             }
-            _ => (),
+            let reference = if preview.is_object() { &preview["reference"] } else { &binding["reference_rect_dip"] };
+            if reference.is_array() {
+                coordinate_fields(&mut rows, "reference", &["参考 X","参考 Y","参考宽","参考高"], reference);
+            }
         }
     }
     ModelRc::new(VecModel::from(rows))
@@ -266,4 +246,86 @@ pub fn operation(state: &Value, region: &Value, key: &str, text: &str, index: i3
         "interval" => ("set_visual_check_interval",json!({"seconds":scalar(selected_option(INTERVAL,index)?,&json!(0))?})),
         _ => return Err("未知设置".into()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::settings;
+    use serde_json::json;
+    use slint::Model;
+
+    fn sample_region(mode: &str) -> serde_json::Value {
+        let mut region: serde_json::Value = serde_json::from_str(r##"{
+            "id": "r1",
+            "text": "hello",
+            "font": "Segoe UI",
+            "size": 14,
+            "bold": false,
+            "align": "left",
+            "padding": 8,
+            "letter_spacing": 0.0,
+            "color": "#ececec",
+            "opacity": 255,
+            "background": "#212121",
+            "position_mode": "anchor",
+            "x": 10, "y": 20, "width": 100, "height": 40,
+            "anchor_x": "left", "anchor_y": "top",
+            "scroll": false, "scroll_direction": "left", "scroll_speed": 40, "scroll_gap": 40,
+            "scroll_feather": false, "scroll_feather_width": 24,
+            "outline": false, "outline_width": 1.5, "outline_color": "#000000",
+            "glow": false, "glow_color": "#2ab89d", "glow_radius": 10,
+            "glow_strength": 75, "glow_pulse": true, "glow_period": 2.0,
+            "scroll_fill": false, "corner_radius": 0,
+            "border": false, "border_width": 1.5, "border_color": "#c9ee46",
+            "bg_gradient": false, "bg_gradient_color": "#3d2f66", "bg_gradient_angle": 135,
+            "shadow": false, "shadow_color": "#000000", "shadow_offset_x": 2.0, "shadow_offset_y": 2.0,
+            "shimmer": false, "shimmer_color": "#ffffff", "shimmer_period": 2.5, "shimmer_strength": 45,
+            "visual_binding": {
+                "tracking_kind": "features",
+                "search_limit_dip": 500,
+                "reference_rect_dip": [10, 20, 120, 40],
+                "relation": {
+                    "mode": "position_only",
+                    "anchor_x": "left", "anchor_y": "top",
+                    "offset_dip": [0, 0], "fixed_size_dip": [100, 40],
+                    "padding_physical": 2
+                }
+            }
+        }"##).unwrap();
+        region["position_mode"] = serde_json::Value::String(mode.to_owned());
+        region
+    }
+
+    #[test]
+    fn builds_three_balanced_pages() {
+        let state = json!({"visual_check_interval_seconds": 0});
+        let anchor_region = sample_region("anchor");
+
+        let p0 = settings(&state, &anchor_region, 0);
+        assert_eq!(p0.row_count(), 13);
+        assert_eq!(p0.row_data(0).unwrap().key, "font");
+        assert_eq!(p0.row_data(7).unwrap().key, "opacity");
+        assert_eq!(p0.row_data(8).unwrap().key, "background");
+        assert_eq!(p0.row_data(9).unwrap().key, "corner_radius");
+
+        let p1_anchor = settings(&state, &anchor_region, 1);
+        assert_eq!(p1_anchor.row_count(), 6);
+        assert_eq!(p1_anchor.row_data(0).unwrap().key, "x");
+
+        let visual_region = sample_region("visual");
+        let p1_visual = settings(&state, &visual_region, 1);
+        assert!(p1_visual.iter().any(|s| s.key == "interval" && s.section == 0));
+        assert!(p1_visual.iter().any(|s| s.key.starts_with("relation.") && s.section == 1));
+        assert!(p1_visual.iter().any(|s| s.key.starts_with("reference.") && s.section == 2));
+
+        let p2 = settings(&state, &anchor_region, 2);
+        assert_eq!(p2.row_count(), 27);
+        assert_eq!(p2.row_data(0).unwrap().key, "scroll");
+        assert_eq!(p2.row_data(6).unwrap().key, "outline");
+        assert_eq!(p2.row_data(9).unwrap().key, "glow");
+        assert_eq!(p2.row_data(14).unwrap().key, "glow_period");
+        assert_eq!(p2.row_data(15).unwrap().key, "scroll_fill");
+        assert_eq!(p2.row_data(16).unwrap().key, "bg_gradient");
+        assert_eq!(p2.row_data(26).unwrap().key, "shimmer_strength");
+    }
 }

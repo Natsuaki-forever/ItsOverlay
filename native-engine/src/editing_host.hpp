@@ -72,6 +72,7 @@ inline void Engine::reconcile(bool synchronize){
             for(auto key:{"x","y","anchor_x","anchor_y","reference_width","reference_height"}){before.erase(key);after.erase(key);}
             if(before!=after)surface->release();
             surface->region=Region(entry);
+            if(!surface->region.drawable)surface->hide();
         }
         updated.push_back(std::move(surface));
     }
@@ -492,6 +493,18 @@ inline json Engine::editor_operation(const std::string& operation,const json& pa
         if(editCanvas->valid()&&IsWindowVisible(editCanvas->hwnd)){
             SetForegroundWindow(editCanvas->hwnd);SetFocus(editCanvas->hwnd);
         }
+    }else if(operation=="set_hotkey"){
+        if(!shell)throw std::runtime_error("operation_unavailable");
+        shell->apply_hotkey(payload.at("hotkey").get<std::string>(),true);
+        configState->stateSequence++;
+    }else if(operation=="toggle_startup"){
+        if(!shell)throw std::runtime_error("operation_unavailable");
+        shell->toggle_startup();
+        configState->stateSequence++;
+    }else if(operation=="open_config_dir"){
+        if(configState){
+            ShellExecuteW(nullptr,L"open",configState->path.parent_path().c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+        }
     }
     return json::object();
 }
@@ -529,6 +542,10 @@ inline void Engine::begin_editing(){
         {"calibration_busy",calibrationEditorSuspended},
         {"calibration_result",configState->selected==calibrationResultOwner?calibrationResult:""},
         {"editing_preview",visual?visual->render_preview():json(nullptr)},
+        {"hotkey",shell?shell->hotkeySpec:std::string("Ctrl+Alt+O")},
+        {"hotkey_ok",shell?shell->hotkey:true},
+        {"startup_enabled",shell?shell->startup_enabled():false},
+        {"app_version",std::string("v0.1.0α")},
         {"focus_text_sequence",focusTextSequence},{"canvas_hwnd",editCanvas?reinterpret_cast<uintptr_t>(editCanvas->hwnd):0}};};
     protocol->extension=[this](const std::string& op,const json& payload,DWORD pid){return editor_operation(op,payload,pid);};
     std::wstring executable,command;
